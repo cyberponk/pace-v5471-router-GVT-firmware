@@ -1,0 +1,32 @@
+#!/bin/ash
+# /etc/bewan/scripts/tether-dhcp <deconfig|bound|renew|leasefail|nak>
+# udhcpc hook for the USB tethering interface: sets the address and records the lease in
+# /var/run/tether.lease for tetherd, which does routing, NAT and DNS.
+# Env from udhcpc: interface ip subnet router dns.
+# ash, not /bin/sh: a dash error here would trigger the softdog reboot.
+
+LEASE=/var/run/tether.lease
+IF=${interface:-eth3G}
+
+log() { logger -t tether-dhcp "$*"; }
+
+case "$1" in
+deconfig)
+	rm -f $LEASE
+	ip addr flush dev $IF 2>/dev/null
+	;;
+bound|renew)
+	gw=${router%% *}
+	ifconfig $IF ${ip:-0.0.0.0} netmask ${subnet:-255.255.255.0}
+	{
+		echo "ip=${ip:-}"
+		echo "gateway=$gw"
+		echo "dns=${dns:-}"
+	} > $LEASE.tmp && mv $LEASE.tmp $LEASE
+	log "$1 $IF ip=${ip:-} gw=$gw dns=${dns:-}"
+	;;
+leasefail|nak)
+	log "$1 on $IF"
+	;;
+esac
+true

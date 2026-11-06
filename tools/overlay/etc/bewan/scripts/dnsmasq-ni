@@ -1,0 +1,72 @@
+#!/bin/ash
+# /etc/bewan/scripts/dnsmasq-ni <conf> <DoT provider|off> <rebind protection 0|1> <dns forwarder on 0|1>
+# Called by init.d/dnsmasq after it has written the configuration; prints the dnsmasq binary to run.
+# - dnsmasq 2.93 (/sbin/dnsmasq) replaces the stock 2.45 (/sbin/dnsmasq-2.45): the options only the
+#   GVT build knew (dns-redirect, dns-fallback-time, vendor class @interface) are taken out; if the
+#   new one still rejects the file (--test), the old binary is used with the original file
+# - the firmware writes the upstream servers as "nameserver 192.168.1.1@192.168.1.10" (GVT extension:
+#   source address) in resolv.conf; dnsmasq 2.93 reads a copy without it (resolv.dnsmasq, kept in
+#   sync by tetherd, lib/ni-guard; dnsmasq rereads it when it changes)
+# - DNS rebinding protection: answers from upstream servers with private addresses are dropped,
+#   except for the private suffixes (.local, .lan, .home, .home.arpa, .internal)
+# - DNS over TLS: dnsmasq forwards to dotproxy (127.0.0.1#5053), which keeps a TLS connection to
+#   the provider (Services_DnsForwarder_DoT); tetherd restarts it if it dies (/var/run/dotproxy.cmd)
+CONF=$1 DOT=${2:-off} REBIND=${3:-1} FWD=${4:-1}
+NEW=/sbin/dnsmasq OLD=/sbin/dnsmasq-2.45
+CMDF=/var/run/dotproxy.cmd
+RESOLV=/var/bewan/resolv.conf RESOLV_NI=/var/bewan/resolv.dnsmasq
+
+case "$DOT" in
+cloudflare) servers="-s 1.1.1.1@cloudflare-dns.com -s 1.0.0.1@cloudflare-dns.com" ;;
+quad9) servers="-s 9.9.9.9@dns.quad9.net -s 149.112.112.112@dns.quad9.net" ;;
+google) servers="-s 8.8.8.8@dns.google -s 8.8.4.4@dns.google" ;;
+*) servers='' ;;
+esac
+[ "$FWD" = 1 ] || servers=''
+
+cp $CONF $CONF.orig
+sed -i -e '/^[[:space:]]*dns-redirect/d' -e '/^dns-fallback-time=/d' \
+	-e 's/^\(dhcp-vendorclass=[^@]*\)@.*/\1/' -e "s|^resolv-file=$RESOLV\$|resolv-file=$RESOLV_NI|" $CONF
+sed 's/^\(nameserver [^@ ]*\)@.*/\1/' $RESOLV > $RESOLV_NI.tmp 2>/dev/null; mv $RESOLV_NI.tmp $RESOLV_NI
+if [ "$FWD" = 1 ]; then
+	if [ "$REBIND" != 0 ]; then
+		echo "stop-dns-rebind" >> $CONF
+		echo "rebind-localhost-ok" >> $CONF
+		# names under private suffixes can't be registered on the Internet: local servers may answer
+		# them with private addresses (e.g. srv.dom.local from the main router)
+		echo "rebind-domain-ok=/local/lan/home/home.arpa/internal/" >> $CONF
+	fi
+	if [ -n "$servers" ]; then
+		sed -i '/^resolv-file=/d' $CONF
+		echo "no-resolv" >> $CONF
+		echo "server=127.0.0.1#5053" >> $CONF
+	fi
+fi
+
+# dotproxy: (re)start with the current provider, or stop
+want="-l 5053 $servers"
+if [ -n "$servers" ]; then
+	if [ "$(cat $CMDF 2>/dev/null)" != "$want" ] || ! pidof dotproxy >/dev/null; then
+		killall dotproxy 2>/dev/null
+		echo "$want" > $CMDF
+		start-stop-daemon -S -b -x /usr/sbin/dotproxy -- $want
+	fi
+else
+	rm -f $CMDF
+	killall dotproxy 2>/dev/null
+fi
+
+if $NEW --test -C $CONF >/dev/null 2>&1; then
+	rm -f $CONF.orig
+	echo $NEW
+else
+	logger -t dnsmasq-ni "dnsmasq 2.93 rejects $CONF ($($NEW --test -C $CONF 2>&1 | head -1)), using 2.45"
+	mv $CONF.orig $CONF
+	if [ "$FWD" = 1 ] && [ -n "$servers" ]; then
+		sed -i '/^resolv-file=/d' $CONF
+		echo "no-resolv" >> $CONF
+		echo "server=127.0.0.1#5053" >> $CONF
+	fi
+	echo $OLD
+fi
+true

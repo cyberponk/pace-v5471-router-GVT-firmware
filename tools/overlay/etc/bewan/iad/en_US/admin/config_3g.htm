@@ -1,0 +1,198 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, cli;
+	var Messages = App.MessageUtil;
+	var M = "ModemInterface_1_", W = "WANConnectionDevice_6_WANPPPConnection_";
+	var txt = {
+		badPin: 'The PIN must be 4 to 8 digits (or empty).',
+		saved: 'Settings saved.',
+		apAp: 'The device is in access point mode. Switch to router mode under Operating Mode to use the 3G modem.'
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function trim(s) { return (s || "").replace(/^\s+|\s+$/g, ""); }
+	function fill() {
+		el("enable").checked = data.modem.Enable == "1";
+		el("apn").value = data.modem.APN || "";
+		el("pin").value = data.modem.PINCode || "";
+		el("number").value = data.modem.PhoneNumber || "*99#";
+		el("pref").value = data.modem.ModePref || "3Gpref";
+		el("user").value = data.pppUser || "";
+		el("pass").value = "";
+		el("source").value = data.defRoute == "6" ? "6" : "1";
+		var st = data.modem.Status || {}, k, ids = ["Manufacturer", "Product", "SIMState", "StrenghtSignal", "Registration", "Access"];
+		for (k = 0; k < ids.length; k++) {
+			el("st" + ids[k]).innerHTML = st[ids[k]] || "-";
+		}
+	}
+
+	function save() {
+		Messages.clearAll();
+		var u = {}, pin = trim(el("pin").value), pass = el("pass").value;
+		if (pin != "" && !/^\d{4,8}$/.test(pin)) { Messages.error(txt.badPin); return; }
+		u[M + "Enable"] = el("enable").checked ? "1" : "0";
+		u[M + "APN"] = trim(el("apn").value);
+		u[M + "PINCode"] = pin;
+		u[M + "PhoneNumber"] = trim(el("number").value);
+		u[M + "ModePref"] = el("pref").value;
+		u[W + "Username"] = trim(el("user").value);
+		u["Layer3Forwarding_DefaultConnectionService"] = el("source").value;
+		var req = cli.rollback().write(u);
+		// empty field = keep the stored password
+		if (pass != "") {
+			req = req.encrypt(W + "Password", pass);
+		}
+		req.commit(function(res) {
+			if (res.error) {
+				Messages.error(res.error);
+			} else {
+				el("pass").value = "";
+				Messages.info(txt.saved);
+			}
+		});
+	}
+
+	return {
+		init: function(pageData) {
+			data = pageData;
+			data.modem = data.modem || {};
+			cli = ConfigAccess(data.token);
+			fill();
+			if (data.opmode != "Router") {
+				Messages.info(txt.apAp);
+			}
+			$("#save").bind("click", save);
+			$("#cancel").bind("click", function() { Messages.clearAll(); fill(); });
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	function p(s) { try { return util.parseJson(s); } catch (e) { return undefined; } }
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=ModemInterface,WANConnectionDevice,Layer3Forwarding"-->'),
+		opmode: p('<!--#echo jsonvar="cli=Device_OperatingMode"-->'),
+		modem: p('<!--#echo jsonvar="cli=ModemInterface_1"-->'),
+		pppUser: p('<!--#echo jsonvar="cli=WANConnectionDevice_6_WANPPPConnection_Username"-->'),
+		defRoute: p('<!--#echo jsonvar="cli=Layer3Forwarding_DefaultConnectionService"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_3g');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">3G Modem</h3>
+<p>USB 3G modem used as Internet connection in router mode. Supported: Alcatel X200, ZTE MF668/K3520/K3765, Huawei E169/K3520/E160E/E173/E1820/E353.</p>
+
+<form action="#" class="form-configuracoes">
+<table class="setupWifiTable">
+
+<thead>
+	<tr><th colspan="2">Modem status</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Manufacturer:</td><td id="stManufacturer">-</td></tr>
+	<tr><td width="250">Product:</td><td id="stProduct">-</td></tr>
+	<tr><td width="250">SIM state:</td><td id="stSIMState">-</td></tr>
+	<tr><td width="250">Signal strength:</td><td id="stStrenghtSignal">-</td></tr>
+	<tr><td width="250">Registration:</td><td id="stRegistration">-</td></tr>
+	<tr><td width="250">Access technology:</td><td id="stAccess">-</td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">Settings</th></tr>
+</thead>
+<tbody>
+	<tr>
+		<td width="250">3G modem:<small class="ni-desc">Use a supported USB 3G modem when it is plugged in (router mode).</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="enable" /><span></span></label></td>
+	</tr>
+	<tr>
+		<td width="250">Internet source:<small class="ni-desc">Which connection is the Internet: the WAN port or the 3G modem. USB tethering failover is set on the USB Devices page.</small></td>
+		<td>
+			<select id="source" style="width:auto">
+				<option value="1">WAN port</option>
+				<option value="6">3G modem</option>
+			</select>
+		</td>
+	</tr>
+	<tr><td width="250">APN:<small class="ni-desc">Access point name of your mobile operator (for example zap.vivo.com.br).</small></td><td><input type="text" id="apn" maxlength="64" /></td></tr>
+	<tr><td width="250">Username:<small class="ni-desc">Login of the mobile operator, if it requires one.</small></td><td><input type="text" id="user" maxlength="64" /></td></tr>
+	<tr><td width="250">Password:<small class="ni-desc">Password of the mobile operator, if it requires one.</small></td><td><input type="password" id="pass" maxlength="64" /> <br/><small>Leave empty to keep the current password.</small></td></tr>
+	<tr><td width="250">SIM PIN:<small class="ni-desc">PIN of the SIM card, if it is locked. A wrong PIN can block the SIM.</small></td><td><input type="password" id="pin" maxlength="8" /></td></tr>
+	<tr><td width="250">Dial number:<small class="ni-desc">Number the modem dials to connect; usually *99#.</small></td><td><input type="text" id="number" maxlength="32" /></td></tr>
+	<tr>
+		<td width="250">Network preference:<small class="ni-desc">Which mobile networks the modem may use.</small></td>
+		<td>
+			<select id="pref" style="width:auto">
+				<option value="3Gpref">3G preferred</option>
+				<option value="3Gonly">3G only</option>
+				<option value="GPRSpref">2G preferred</option>
+				<option value="GPRSonly">2G only</option>
+			</select>
+		</td>
+	</tr>
+</tbody>
+
+<tfoot>
+	<tr><td colspan="2">
+		<a id="cancel" class="btn-default-orange-small right"><span>Cancel</span></a>
+		<a id="save"  class="btn-default-orange-small right"><span>Save</span></a>
+	</td></tr>
+</tfoot>
+</table>
+</form>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>

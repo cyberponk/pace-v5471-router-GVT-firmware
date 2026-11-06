@@ -1,0 +1,5 @@
+#!/bin/sh
+# Called from /etc/bewan/rc2 (sourced, set -u: no exit, no unset variables)
+# Start the Android USB tethering helper in the background.
+
+/usr/sbin/tetherd "${Device_OperatingMode:-AP}" </dev/null >/dev/null 2>&1 &

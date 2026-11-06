@@ -1,0 +1,9 @@
+# build output and extracted rootfs (recreated by tools/make_rootfs.sh)
+/work/
+# third-party firmware, downloads and session transcripts (large / not ours)
+/Downloads 2026-10-26/
+/Firmware Original/
+/Firmware Pace desbloqueado/
+/session/
+*.bin
+__pycache__/

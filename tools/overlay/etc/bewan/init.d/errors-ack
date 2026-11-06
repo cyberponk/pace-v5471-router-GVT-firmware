@@ -1,0 +1,4 @@
+#!/bin/sh
+# /etc/bewan/init.d/errors-ack: onchange of Device_ErrorsAck (sourced by configd: dash, set -u)
+start-stop-daemon -S -b -x /etc/bewan/scripts/errors-ack
+true

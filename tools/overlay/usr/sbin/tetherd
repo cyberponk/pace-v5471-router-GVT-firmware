@@ -1,0 +1,321 @@
+#!/bin/ash
+# /usr/sbin/tetherd <AP|Router>
+# Android USB tethering, WAN failover and runtime status for the web pages.
+# - loads usbnet/cdc_ether/rndis_host (built from the Broadcom 4.12L tree, tools/re/modules)
+# - runs a DHCP client on the phone interface while it is plugged (the MitraStar usbnet
+#   names it eth3G); the lease is written to $LEASE by tether-dhcp
+# - Router mode: checks the Internet through the WAN and through the phone every round by pinging
+#   the monitoring addresses (Device_InternetProbes) from each one's own address; source-based
+#   rules (pref 5 = WAN -> table 201, pref 6 = phone -> table 202) send each probe out its own
+#   link, whatever the default route is. The firmware keeps the WAN default route in table
+#   "default"; with failover on (Device_TetherFailover) and the WAN down, a default route via the
+#   phone goes in table "main", which is looked up first, and DNS switches to the phone's. When
+#   the WAN answers again it is removed and update-dns restores the WAN DNS servers.
+# - Router mode, Device_WANIsolate: LAN clients can't reach the network on the WAN side.
+# - AP mode: Internet check through the main router (management address, gateway, DNS)
+# - writes /var/status/{tether,usb,wifi,hw,clock}, included by the web pages
+# - lib/ni-guard every round: acsd and phone input filter, Wi-Fi client isolation, dotproxy
+# busybox ash on purpose: a fatal error in /bin/sh (patched dash) stops the watchdog.
+
+MODE=${1:-AP}
+IF=eth3G
+LAN=lan1
+PID=/var/run/udhcpc-$IF.pid
+LEASE=/var/run/tether.lease
+STATUS=/var/status/tether
+USBSTATUS=/var/status/usb
+WIFISTATUS=/var/status/wifi
+RESOLV=/var/bewan/resolv.conf
+M=/lib/modules/2.6.30/kernel/drivers/net
+DEF_PROBES="1.1.1.1 8.8.8.8"
+FAIL_DOWN=3	# failed rounds before a link counts as down
+OK_UP=2		# good rounds before switching back to the WAN
+
+log() { logger -t tetherd "$*"; }
+
+# Device_<name> from configd (bare value)
+param() { printf 'cd _Device\nget %s\n' "$1" | cli -q 2>/dev/null; }
+
+# value of key from a key=value file
+val() { sed -n "s/^$1=//p" $2 2>/dev/null | head -1; }
+
+start_dhcp() {
+	kill -0 $(cat $PID 2>/dev/null) 2>/dev/null && return
+	log "$IF present, starting DHCP"
+	ip link set $IF up
+	# patched busybox copy: stock udhcpc segfaults on Android's option 43
+	/usr/lib/tether/busybox udhcpc -i $IF -f -S -s /etc/bewan/scripts/tether-dhcp \
+		-p $PID -t 5 -T 3 -A 10 </dev/null >/dev/null 2>&1 &
+}
+
+stop_dhcp() {
+	[ -f $PID ] || return
+	log "stopping DHCP on $IF"
+	kill $(cat $PID) 2>/dev/null
+	rm -f $PID
+	interface=$IF /etc/bewan/scripts/tether-dhcp deconfig
+}
+
+# NAT and firewall openings for the phone; the firmware flushes its chains on every
+# WAN/LAN event, so this is checked each round
+assert_nat() {
+	iptables -t nat -nvL POSTROUTING 2>/dev/null | grep -q "MASQUERADE.*$IF" && return
+	iptables -t nat -A POSTROUTING -o $IF -j MASQUERADE
+	iptables -I FORWARD 1 -o $IF -j ACCEPT
+	iptables -I FORWARD 1 -i $IF -m state --state ESTABLISHED,RELATED -j ACCEPT
+	iptables -I INPUT 1 -i $IF -p udp --dport 68 -j ACCEPT
+}
+
+# WAN route from table default -> $wanvia $wandev, $wanip (empty if none)
+wan_route() {
+	wanvia=''; wandev=''; wanip=''
+	set -- $(ip route show table default 2>/dev/null | grep '^default' | head -1)
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		via) wanvia=$2; shift ;;
+		dev) wandev=$2; shift ;;
+		esac
+		shift
+	done
+	[ -n "$wandev" ] || return
+	set -- $(ip -4 -o addr show dev $wandev 2>/dev/null | grep -o 'inet [0-9.]*')
+	wanip=${2:-}
+}
+
+# source rule pref $1 -> table $2 for address $3; replaces a previous address
+src_rule() {
+	local old
+	old=$(ip rule 2>/dev/null | sed -n "s/^$1:[[:space:]]*from \([0-9.]*\) .*/\1/p")
+	[ "$old" = "$3" ] && return
+	[ -n "$old" ] && ip rule del pref $1 2>/dev/null
+	[ -n "$3" ] && ip rule add pref $1 from $3 lookup $2
+}
+
+# one probe round from source address $1; true if any monitoring address answers
+probe_from() {
+	local t
+	for t in $probes; do
+		ping -c 1 -W 2 -I $1 $t >/dev/null 2>&1 && return 0
+	done
+	return 1
+}
+
+use_phone() {
+	local gw=$1 dns=$2 s
+	ip route replace default via $gw dev $IF
+	if [ -n "$dns" ] && [ "$(cat $RESOLV 2>/dev/null)" != "$(for s in $dns; do echo "nameserver $s"; done)" ]; then
+		rm -f $RESOLV
+		for s in $dns; do echo "nameserver $s" >> $RESOLV; done
+		chmod 644 $RESOLV
+		kill -HUP $(cat /var/run/dnsmasq.pid 2>/dev/null) 2>/dev/null
+	fi
+}
+
+leave_phone() {
+	ip route del default dev $IF 2>/dev/null
+	/etc/bewan/scripts/update-dns 1 >/dev/null 2>&1
+}
+
+# LAN -> network on the WAN side blocked (Device_WANIsolate); $1 = subnet or empty to remove
+isolate() {
+	if [ -n "$iso" ] && [ "$iso" != "$1" ]; then
+		iptables -D FORWARD -i $LAN -d $iso -j DROP 2>/dev/null
+		log "isolation from $iso removed"
+	fi
+	iso=$1
+	[ -n "$iso" ] || return
+	iptables -nvL FORWARD 2>/dev/null | grep -q "DROP .* $LAN .* $iso" && return
+	iptables -I FORWARD 1 -i $LAN -d $iso -j DROP
+	log "LAN isolated from $iso"
+}
+
+usb_list() {
+	local d n i drv
+	for d in /sys/bus/usb/devices/*; do
+		n=${d##*/}
+		case "$n" in *:*|usb*) continue ;; esac
+		[ -f $d/idVendor ] || continue
+		drv=''
+		for i in $d/$n:*; do
+			[ -e $i/driver ] || continue
+			i=$(ls -l $i/driver); i=${i##*/}	# no readlink applet
+			case " $drv " in *" $i "*) ;; *) drv="$drv $i" ;; esac
+		done
+		echo "usb=$n|$(cat $d/idVendor):$(cat $d/idProduct)|$(cat $d/manufacturer 2>/dev/null)|$(cat $d/product 2>/dev/null)|${drv# }"
+	done
+}
+
+# actual Wi-Fi channel and width ("1l (0x1803)": channel 1, 40 MHz with the l/u sideband), and the
+# associated clients: sta=MAC|RSSI dBm|802.11 mode|width (MHz, from the rate)|seconds connected|last tx kbps|last rx kbps
+wifi_status() {
+	local cs bw=20 m info mode w
+	set -- $(wl -i wl0 chanspec 2>/dev/null)
+	cs=${1:-}
+	case "$cs" in *l|*u) bw=40 ;; */80) bw=80 ;; esac
+	echo "channel=${cs%%[lu/]*}"
+	echo "bandwidth=$bw"
+	for m in $(wl -i wl0 assoclist 2>/dev/null | sed -n 's/^assoclist //p'); do
+		info=$(wl -i wl0 sta_info $m 2>/dev/null)
+		case "$info" in
+		*N_CAP*) mode=n ;;
+		*" 54"*|*"54("*) mode=g ;;
+		*) mode=b ;;
+		esac
+		tx=$(echo "$info" | sed -n 's/.*rate of last tx pkt: \([0-9]*\) kbps.*/\1/p')
+		# this driver's sta_info has no HT capabilities: the width in use follows from the 802.11n
+		# rate the AP last sent with (MCS 0-15, long/short guard interval), empty if not an HT rate
+		w=''
+		[ $mode = n ] && case $(( (${tx:-0} + 500) / 1000 )) in
+		7|13|22|26|29|39|43|52|58|65|72|78|87|104|116|117|130|144) w=20 ;;
+		15|27|30|41|45|60|81|90|108|120|122|135|150|162|180|216|240|243|270|300) w=40 ;;
+		esac
+		echo "sta=$m|$(wl -i wl0 rssi $m 2>/dev/null)|$mode|$w|$(echo "$info" | sed -n 's/.*in network \([0-9]*\) seconds.*/\1/p')|$tx|$(echo "$info" | sed -n 's/.*rate of last rx pkt: \([0-9]*\) kbps.*/\1/p')"
+	done
+}
+
+. /etc/bewan/lib/ni-guard
+
+mkdir -p /var/status
+for mod in $M/mii.ko $M/usb/usbnet.ko $M/usb/cdc_ether.ko $M/usb/rndis_host.ko; do
+	name=${mod##*/}; name=${name%.ko}
+	grep -q "^$name " /proc/modules && continue
+	insmod $mod || log "insmod $name failed"
+done
+# hardware version for the About page (the factory "agilepca" field is empty on these units)
+{
+	pz=$(pzinfo -a 2>/dev/null)
+	soc=$(sed -n 's/^system type[[:space:]]*: //p' /proc/cpuinfo)
+	cpu=$(sed -n 's/^cpu model[[:space:]]*: //p' /proc/cpuinfo | head -1)
+	echo "hw=V5471 $(echo "$pz" | sed -n 's/^prodcode : 00//p'), $soc ($cpu), loader $(echo "$pz" | sed -n 's/^loaderversion : //p')"
+} > /var/status/hw
+log "started, mode $MODE"
+
+active=none; fails=0; oks=0; pfails=$FAIL_DOWN; iso=''; wansub=''
+while true; do
+	en=1; [ "$MODE" = Router ] && [ "$(param TetherFailover)" = 0 ] && en=0
+	plugged=0; [ -d /sys/class/net/$IF ] && plugged=1
+
+	if [ $plugged = 1 ] && [ $en = 1 ]; then
+		start_dhcp
+	else
+		stop_dhcp
+	fi
+
+	gw=''; dns=''; ip=''
+	if [ $plugged = 1 ] && [ -f $LEASE ]; then
+		ip=$(val ip $LEASE); gw=$(val gateway $LEASE); dns=$(val dns $LEASE)
+	fi
+	state=unplugged
+	[ $plugged = 1 ] && state=dhcp
+	[ $plugged = 1 ] && [ $en = 0 ] && state=disabled
+	[ -n "$gw" ] && state=up
+
+	wan=''; phonenet=''; internet=''
+	probes=''
+	for t in $(param InternetProbes | tr ',' ' '); do
+		case "$t" in *[!0-9.]*|'') ;; *) probes="$probes $t" ;; esac
+	done
+	[ -n "$probes" ] || probes=$DEF_PROBES
+	if [ "$MODE" != Router ]; then
+		# AP mode: management address, the main router as gateway, Internet through it
+		set -- $(ip -4 -o addr show dev $LAN 2>/dev/null | grep -v ' 169\.254\.' | grep -o 'inet [0-9.]*' | head -1)
+		apip=${2:-}
+		set -- $(ip route show 2>/dev/null | grep "^default via .* dev $LAN" | head -1)
+		apgw=${3:-}
+		apdns=$(sed -n 's/^nameserver \([^@ ]*\).*/\1/p' $RESOLV 2>/dev/null | tr '\n' ' ')
+		internet=down
+		[ -n "$apip" ] && [ -n "$apgw" ] && probe_from $apip && internet=up
+	fi
+	if [ "$MODE" = Router ]; then
+
+		# WAN: probes from the WAN address through table 201
+		wan_route
+		if [ -n "$wanip" ]; then
+			if [ -n "$wanvia" ]; then
+				ip route replace default via $wanvia dev $wandev table 201
+			else
+				ip route replace default dev $wandev table 201
+			fi
+		fi
+		src_rule 5 201 "$wanip"
+		if [ -n "$wanip" ] && probe_from $wanip; then
+			oks=$(($oks + 1)); fails=0
+		else
+			fails=$(($fails + 1)); oks=0
+			[ -z "$wanip" ] && fails=$FAIL_DOWN
+		fi
+		if [ "$active" = phone ]; then
+			[ $oks -ge $OK_UP ] && wan=up || wan=down
+		else
+			[ $fails -ge $FAIL_DOWN ] && wan=down || wan=up
+		fi
+
+		# phone: probes from the phone address through table 202
+		if [ "$state" = up ]; then
+			assert_nat
+			ip route replace default via $gw dev $IF table 202
+			src_rule 6 202 "$ip"
+			if probe_from $ip; then pfails=0; else pfails=$(($pfails + 1)); fi
+			[ $pfails -ge $FAIL_DOWN ] && phonenet=down || phonenet=up
+		else
+			src_rule 6 202 ''
+			pfails=$FAIL_DOWN
+		fi
+
+		want=none
+		if [ $wan = up ]; then
+			want=wan
+		elif [ "$state" = up ] && [ "$phonenet" = up ]; then
+			want=phone
+		fi
+		if [ $want != $active ]; then
+			log "internet: $active -> $want (wan $wan, phone $state/$phonenet)"
+			[ $active = phone ] && leave_phone
+			active=$want
+		fi
+		[ $active = phone ] && use_phone $gw "$dns"
+		case $active in
+		wan) internet=$wan ;;
+		phone) internet=$phonenet ;;
+		*) internet=down ;;
+		esac
+
+		# isolation from the WAN-side network (connected route of the WAN interface)
+		wansub=''
+		if [ -n "$wandev" ]; then
+			set -- $(ip -4 route show dev $wandev scope link 2>/dev/null | grep -v '^default' | head -1)
+			wansub=${1:-}
+		fi
+		sub=''; [ "$(param WANIsolate)" = 1 ] && sub=$wansub
+		isolate "$sub"
+	fi
+	guard_round "${wansub:-}"
+
+	u=/sys/class/net/$IF/device/..
+	{
+		echo "mode=$MODE"
+		echo "failover=$en"
+		echo "state=$state"
+		[ $plugged = 1 ] && echo "device=$(cat $u/manufacturer 2>/dev/null) $(cat $u/product 2>/dev/null)"
+		echo "ip=$ip"
+		echo "gateway=$gw"
+		echo "dns=$dns"
+		if [ "$MODE" = Router ]; then
+			echo "wan=$wan"
+			echo "phonenet=$phonenet"
+			echo "internet=$internet"
+			echo "active=$active"
+		else
+			echo "apip=${apip:-}"
+			echo "apgw=${apgw:-}"
+			echo "apdns=${apdns% }"
+			echo "internet=$internet"
+		fi
+	} > $STATUS.tmp && mv $STATUS.tmp $STATUS
+	usb_list > $USBSTATUS.tmp && mv $USBSTATUS.tmp $USBSTATUS
+	wifi_status > $WIFISTATUS.tmp && mv $WIFISTATUS.tmp $WIFISTATUS
+	date '+now: %Y-%m-%d %H:%M:%S %Z' > /var/status/clock	# NTP page
+	/etc/bewan/scripts/errscan	# logged errors for the Status page
+
+	sleep 5
+done

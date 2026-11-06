@@ -1,0 +1,6 @@
+#!/bin/sh
+# /etc/bewan/init.d/ntp-now: onchange of Services_Time_UpdateNow (the NTP page's Update now button
+# writes a new value). Sourced by configd (dash, set -u): only starts the sync in the background
+# and returns; the steps go to /var/status/ntp.log.
+start-stop-daemon -S -b -x /etc/bewan/scripts/ntp-now
+true

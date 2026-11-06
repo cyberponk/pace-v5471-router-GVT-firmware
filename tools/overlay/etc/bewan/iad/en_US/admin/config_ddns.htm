@@ -1,0 +1,434 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, cli, polling = null, editing = null;
+	var Messages = App.MessageUtil;
+	// accounts: Services_DynDNS_<n> (lib/dyndns-ni for the new providers); each has its own update
+	// script and cron entry, all of them run at every WAN connection
+	var NEW = { dynv6: 1, nsupdate4: 1, nsupdate6: 1, customget: 1 };
+	var txt = {
+		token: 'Token:',
+		token_d: 'HTTP token of the dynv6 account (Keys page). Leave empty to keep the stored one.',
+		secret: 'Secret:',
+		secret_d: 'Secret of this host at nsupdate.info (shown when the host is created). Leave empty to keep the stored one.',
+		pass: 'Password:',
+		pass_d: 'Password of that account. Leave empty to keep the stored one.',
+		host_d: 'Full name to update, for example myhome.dns.army or myhome.nsupdate.info.',
+		hostCp_d: 'Name this URL updates, for example myhome.example.com (shown in the list and the log). Empty = the server of the URL.',
+		ok: 'OK',
+		failed: 'Failed',
+		running: 'Updating...',
+		never: 'Not done yet',
+		disabled: 'Disabled',
+		badHost: 'Please enter a valid hostname.',
+		badUrl: 'Please enter the update URL (https://...).',
+		badServer: 'Please enter the server name.',
+		noUser: 'Please enter the username.',
+		added: 'Service added.',
+		saved: 'Service saved.',
+		removed: 'Service removed.',
+		finished: 'Update finished, see the log below.',
+		timeout: 'No result after 90 seconds, see the System Logs page.',
+		noLog: 'No update done yet.',
+		noServices: 'No dynamic DNS service configured.',
+		edit: 'Edit',
+		update: 'Update now',
+		remove: 'Remove',
+		pCustom: 'cPanel / custom URL'
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function trim(s) { return (s || "").replace(/^\s+|\s+$/g, ""); }
+	function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+	function show(id, on) { el(id).style.display = on ? "" : "none"; }
+	function provName(s) {
+		return { dynv6: "dns.army / dynv6", nsupdate4: "nsupdate.info (IPv4)", nsupdate6: "nsupdate.info (IPv6)",
+			customget: txt.pCustom, dyndns: "DynDNS", "no-ip": "No-IP", easydns: "EasyDNS", dtdns: "DtDNS" }[s] || s || "-";
+	}
+
+	// accounts in the list that hold a service (the stock default account 1 is empty)
+	function accounts() {
+		var l = (data.ddns.List || "").split(","), out = [], i, a;
+		for (i = 0; i < l.length; i++) {
+			a = data.ddns[l[i]];
+			if (l[i] && a && (a.Host || a.URL)) { out.push(l[i]); }
+		}
+		return out;
+	}
+	// index for a new account: an empty one in the list, else the next number
+	function newIndex() {
+		var l = (data.ddns.List || "").split(","), i, a, max = 0;
+		for (i = 0; i < l.length; i++) {
+			if (!l[i]) { continue; }
+			a = data.ddns[l[i]] || {};
+			if (!a.Host && !a.URL && a.Enable != "1") { return l[i]; }
+			if (+l[i] > max) { max = +l[i]; }
+		}
+		return String(max + 1);
+	}
+
+	// run logs per account ("account: n" then key: value lines), from /var/status/ddns-all; without
+	// the file the SSI include gives an error text, which has no such lines
+	function parseLogs(raw) {
+		var l = raw.split("\n"), out = {}, cur = null, i, m, s;
+		for (i = 0; i < l.length; i++) {
+			s = trim(l[i]);
+			m = /^account: (\d+)$/.exec(s);
+			if (m) { cur = out[m[1]] = { lines: [] }; continue; }
+			if (!cur || !/^[a-zA-Z][a-zA-Z ]*: /.test(s)) { continue; }
+			cur.lines.push(s);
+			if ((m = /^check IP: \S+ -> ([0-9a-fA-F.:]+)$/.exec(s))) { cur.ip = m[1]; }
+			if ((m = /^last successful update: (.*)$/.exec(s))) { cur.when = m[1]; }
+			if ((m = /^result: (\S+)/.exec(s))) { cur.result = m[1]; }
+			if (/^status: running/.test(s)) { cur.running = true; }
+		}
+		for (i in out) { out[i].text = out[i].lines.join("\n"); }
+		return out;
+	}
+
+	function rows() {
+		var s = el("server").value;
+		show("rowServer", s == "dynv6");
+		show("rowUrl", s == "customget");
+		show("rowUser", !NEW[s]);
+		show("rowPass", s != "customget");
+		var lab = s == "dynv6" ? [txt.token, txt.token_d] : s.indexOf("nsupdate") == 0 ? [txt.secret, txt.secret_d] : [txt.pass, txt.pass_d];
+		el("passLabel").innerHTML = lab[0];
+		el("passDesc").innerHTML = lab[1];
+		el("hostDesc").innerHTML = s == "customget" ? txt.hostCp_d : txt.host_d;
+	}
+
+	function fill(n) {
+		var d = (n && data.ddns[n]) || { Enable: "1" };
+		editing = n || null;
+		el("enable").checked = d.Enable == "1";
+		var s = d.Server || "dynv6", o = el("server").options || [], i, found = false;
+		for (i = 0; i < o.length; i++) { if (o[i].value == s) { found = true; } }
+		el("server").value = found ? s : "dynv6";
+		el("serverName").value = d.ServerName || "dynv6.com";
+		el("url").value = d.URL || "";
+		el("user").value = NEW[s] ? "" : (d.Username || "");
+		el("pass").value = "";
+		el("host").value = d.Host || "";
+		show("addButtons", !editing);
+		show("editButtons", !!editing);
+		rows();
+	}
+
+	function render() {
+		var a = accounts(), h = "", i, n, d, lg, st, cls;
+		for (i = 0; i < a.length; i++) {
+			n = a[i]; d = data.ddns[n]; lg = data.logs[n] || {};
+			if (d.Enable != "1") { st = txt.disabled; cls = "off"; }
+			else if (lg.running) { st = txt.running; cls = ""; }
+			else if (lg.result == "ok" || (!lg.result && (d.Status || "").toLowerCase() == "ok")) { st = txt.ok; cls = "on"; }
+			else if (lg.result || (d.Status || "").toLowerCase() == "failed") { st = txt.failed; cls = "off"; }
+			else { st = txt.never; cls = ""; }
+			h += '<tr id="niDdnsRow' + n + '"><td>' + esc(provName(d.Server)) + '</td><td>' + esc(d.Host || "-") +
+				'</td><td>' + esc(lg.ip || d.Cache || "-") + '</td><td>' + esc(lg.when && lg.when != "never" ? lg.when : "-") +
+				'</td><td><span class="status-detail ' + cls + '" style="float:none;margin:0">' + st + '</span></td>' +
+				'<td class="ni-actions">' +
+				'<img src="../../img/edit.png" width="20" title="' + txt.edit + '" alt="' + txt.edit + '" onclick="Page.edit(\'' + n + '\')" />' +
+				'<img src="../../img/icon_refresh.png" width="20" title="' + txt.update + '" alt="' + txt.update + '" onclick="Page.update(\'' + n + '\')" />' +
+				'<img src="../../img/delete.png" width="20" title="' + txt.remove + '" alt="' + txt.remove + '" onclick="Page.remove(\'' + n + '\')" />' +
+				'</td></tr>';
+		}
+		el("list").innerHTML = h || '<tr><td colspan="6">' + txt.noServices + '</td></tr>';
+	}
+
+	function showLog(n) {
+		var lg = n && data.logs[n];
+		el("log").innerHTML = lg && lg.text ? esc(lg.text) : txt.noLog;
+	}
+
+	// collects the form into u for account n (false when invalid)
+	function collect(u, n) {
+		var P = "Services_DynDNS_" + n + "_";
+		var s = el("server").value, host = trim(el("host").value), url = trim(el("url").value);
+		var user = trim(el("user").value), srv = trim(el("serverName").value);
+		u[P + "Enable"] = el("enable").checked ? "1" : "0";
+		u[P + "Server"] = s;
+		if (s == "customget") {
+			var m = /^https?:\/\/([^\/?#:]+)/.exec(url);
+			if (!m) { Messages.error(txt.badUrl); return false; }
+			if (!host) { host = m[1]; }
+			u[P + "URL"] = url;
+			user = "none";
+		}
+		if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)+[a-zA-Z0-9-]+$/.test(host)) { Messages.error(txt.badHost); return false; }
+		if (s == "dynv6") {
+			if (!/^[a-zA-Z0-9.-]+$/.test(srv)) { Messages.error(txt.badServer); return false; }
+			u[P + "ServerName"] = srv;
+			user = "none";
+		} else if (s.indexOf("nsupdate") == 0) {
+			user = host;
+		} else if (!NEW[s] && !user) {
+			Messages.error(txt.noUser); return false;
+		}
+		u[P + "Host"] = host;
+		u[P + "Username"] = user;
+		u[P + "EnableHTTPS"] = NEW[s] ? "1" : ((data.ddns[n] || {}).EnableHTTPS || "0");
+		u[P + "DomainAppending"] = "0";
+		u[P + "DomainName"] = "";
+		return true;
+	}
+
+	// re-reads the accounts after a change
+	function reload(done) {
+		cli.rollback().read("Services_DynDNS").commit(function(res) {
+			if (!res.error && res["Services_DynDNS"]) { data.ddns = res["Services_DynDNS"]; }
+			render();
+			if (done) { done(); }
+		});
+	}
+
+	function store(n, msg) {
+		Messages.clearAll();
+		var u = {};
+		if (!collect(u, n)) { return; }
+		var P = "Services_DynDNS_" + n + "_", s = el("server").value, pass = el("pass").value;
+		var req = cli.rollback();
+		// a new list entry has to be created first (create goes before the writes in one commit)
+		if (("," + (data.ddns.List || "") + ",").indexOf("," + n + ",") < 0) {
+			req = req.create("Services_DynDNS_" + n);
+		}
+		req = req.write(u);
+		// empty field = keep the stored password
+		if (pass != "") {
+			req = req.encrypt(P + "Password", pass);
+		} else if (s == "customget" && !(data.ddns[n] || {}).Password) {
+			req = req.encrypt(P + "Password", "none");
+		}
+		req.commit(function(res) {
+			if (res.error) { Messages.error(res.error); return; }
+			reload(function() { fill(null); Messages.info(msg); });
+		});
+	}
+
+	// update now for account n: a new UpdateNow value starts scripts/ddns-now for it; the merged log
+	// (ddns_log.htm) is polled until that account's section has a new result
+	function update(n) {
+		Messages.clearAll();
+		if (polling) { return; }
+		var before = (data.logs[n] || {}).text || "", u = {};
+		u["Services_DynDNS_" + n + "_UpdateNow"] = String(new Date().getTime());
+		cli.rollback().write(u).commit(function(res) {
+			if (res.error) { Messages.error(res.error); return; }
+			Messages.info(txt.running);
+			el("log").innerHTML = txt.running;
+			var start = new Date().getTime();
+			polling = setInterval(function() {
+				poll(function(logs) {
+					if (!polling) { return; }
+					var lg = logs && logs[n];
+					if (lg && lg.text != before) {
+						data.logs = logs;
+						showLog(n);
+						render();
+						if (lg.result && !lg.running) {
+							clearInterval(polling); polling = null;
+							Messages.clearAll();
+							Messages.info(txt.finished);
+						}
+					}
+					if (polling && new Date().getTime() - start > 90000) {
+						clearInterval(polling); polling = null;
+						Messages.clearAll();
+						Messages.error(txt.timeout);
+					}
+				});
+			}, 2000);
+		});
+	}
+
+	function poll(cb) {
+		var x = new XMLHttpRequest();
+		x.onreadystatechange = function() {
+			if (x.readyState != 4) { return; }
+			cb(x.status == 200 ? parseLogs(x.responseText) : null);
+		};
+		x.open("GET", "ddns_log.htm?t=" + new Date().getTime(), true);
+		x.send(null);
+	}
+
+	// disabled first (init.d/dyndns removes the script and cron entry), then removed
+	function remove(n) {
+		Messages.clearAll();
+		var u = {};
+		u["Services_DynDNS_" + n + "_Enable"] = "0";
+		cli.rollback().write(u).commit(function(res) {
+			if (res.error) { Messages.error(res.error); return; }
+			cli.rollback().remove("Services_DynDNS_" + n).commit(function(r2) {
+				if (r2.error) { Messages.error(r2.error); return; }
+				if (editing == n) { fill(null); }
+				reload(function() { Messages.info(txt.removed); });
+			});
+		});
+	}
+
+	return {
+		edit: function(n) { Messages.clearAll(); fill(n); showLog(n); },
+		update: function(n) { update(n); },
+		remove: function(n) { remove(n); },
+		init: function(pageData) {
+			data = pageData;
+			data.ddns = data.ddns || {};
+			data.logs = parseLogs(el("logRaw").innerHTML);
+			cli = ConfigAccess(data.token);
+			fill(null);
+			render();
+			var a = accounts(), last = null, i;
+			for (i = 0; i < a.length; i++) { if (data.logs[a[i]]) { last = a[i]; } }
+			showLog(last);
+			el("server").onchange = rows;
+			$("#add").bind("click", function() { store(newIndex(), txt.added); });
+			$("#clear").bind("click", function() { Messages.clearAll(); fill(null); });
+			$("#save").bind("click", function() { if (editing) { store(editing, txt.saved); } });
+			$("#cancel").bind("click", function() { Messages.clearAll(); fill(null); });
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	function p(s) { try { return eval("(" + s + ")"); } catch (e) { return undefined; } }
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=Services_DynDNS"-->'),
+		ddns: p('<!--#echo jsonvar="cli=Services_DynDNS:shadow"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_ddns');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">Dynamic DNS</h3>
+<p>Keeps names pointing to this router's public IP address, with one or more services. The new providers update over HTTPS with certificate checks (10 s timeout); the public address is read from a check-IP service, so it also works behind another router. All services are checked at every WAN connection and every 5 minutes.</p>
+
+<form action="#" class="form-configuracoes">
+<pre id="logRaw" style="display:none"><!--#include file="ddns.inc" --></pre>
+<table class="setupWifiTable">
+
+<thead>
+	<tr><th colspan="2">Service</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Enabled:<small class="ni-desc">Updates this service. Off keeps it in the list without updating.</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="enable" /><span></span></label></td></tr>
+	<tr>
+		<td width="250">Provider:<small class="ni-desc">Service where the name is registered.</small></td>
+		<td>
+			<select id="server" style="width:auto">
+				<option value="dynv6">dns.army / dynv6 (DynDNS 2)</option>
+				<option value="nsupdate4">nsupdate.info (IPv4)</option>
+				<option value="nsupdate6">nsupdate.info (IPv6)</option>
+				<option value="customget">cPanel / custom URL (GET)</option>
+				<option value="dyndns">DynDNS</option>
+				<option value="no-ip">No-IP</option>
+				<option value="easydns">EasyDNS</option>
+				<option value="dtdns">DtDNS</option>
+			</select>
+		</td>
+	</tr>
+	<tr id="rowServer"><td width="250">Server:<small class="ni-desc">DynDNS 2 update server (dynv6.com for dns.army, dynv6.net and the other dynv6 domains).</small></td>
+		<td><input type="text" id="serverName" maxlength="64" /></td></tr>
+	<tr id="rowUrl"><td width="250">Update URL:<small class="ni-desc">Full update URL from the provider, for example the cPanel dynamic DNS URL. Called with HTTPS (http:// is changed to https://); the server takes the address the call comes from.</small></td>
+		<td><input type="text" id="url" maxlength="255" style="width:330px" /></td></tr>
+	<tr id="rowUser"><td width="250">Username:<small class="ni-desc">Your account at the provider.</small></td>
+		<td><input type="text" id="user" maxlength="64" /></td></tr>
+	<tr id="rowPass"><td width="250"><span id="passLabel" style="font-size:12px;display:inline">Password:</span><small class="ni-desc" id="passDesc">Password of that account. Leave empty to keep the stored one.</small></td>
+		<td><input type="password" id="pass" maxlength="128" /></td></tr>
+	<tr id="rowHost"><td width="250">Hostname:<small class="ni-desc" id="hostDesc">Full name to update, for example myhome.dns.army or myhome.nsupdate.info.</small></td>
+		<td><input type="text" id="host" maxlength="128" /></td></tr>
+</tbody>
+
+<tfoot>
+	<tr id="addButtons"><td colspan="2">
+		<a id="clear" class="btn-default-orange-small right"><span>Clear</span></a>
+		<a id="add"  class="btn-default-orange-small right"><span>Add</span></a>
+	</td></tr>
+	<tr id="editButtons"><td colspan="2">
+		<a id="cancel" class="btn-default-orange-small right"><span>Cancel</span></a>
+		<a id="save"  class="btn-default-orange-small right"><span>Save</span></a>
+	</td></tr>
+</tfoot>
+</table>
+
+<table class="data-table">
+<thead>
+	<tr><th colspan="6">Configured services</th></tr>
+	<tr class="rounded-top">
+		<th>Service</th>
+		<th class="wide">Hostname</th>
+		<th>Current IP</th>
+		<th>Last update</th>
+		<th>Status</th>
+		<th class="actions">Actions</th>
+	</tr>
+</thead>
+<tbody id="list">
+	<tr><td colspan="6">-</td></tr>
+</tbody>
+</table>
+
+<table class="setupWifiTable">
+<thead>
+	<tr><th>Update log</th></tr>
+</thead>
+<tbody>
+	<tr><td class="ni-desc-row">Steps of the last update: public address found, request sent (no passwords), provider's answer. The update button of a service updates it even if the address did not change.</td></tr>
+	<tr><td class="ni-log-cell"><pre id="log" class="ni-log">-</pre></td></tr>
+</tbody>
+</table>
+</form>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>

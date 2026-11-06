@@ -1,0 +1,9 @@
+#!/bin/ash
+# /etc/bewan/scripts/errors-ack: the errors in /nvram/ni-errors were examined (Status page link, or
+# Device_ErrorsAck set from the shell): moved to /nvram/ni-errors.old (last 200 kept).
+E=/nvram/ni-errors
+[ -s $E ] || exit 0
+{ echo "-- examined $(date '+%Y-%m-%d %H:%M')"; cat $E; } >> $E.old
+rm -f $E
+[ $(wc -l < $E.old) -gt 200 ] && { tail -n 200 $E.old > $E.old.tmp; mv $E.old.tmp $E.old; }
+true

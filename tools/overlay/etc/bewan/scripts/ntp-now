@@ -1,0 +1,53 @@
+#!/bin/ash
+# /etc/bewan/scripts/ntp-now: one NTP synchronisation now (the NTP page's Update now button, via
+# init.d/ntp-now), like the firmware's /var/bewan/ntp.d/ntp.sh but logging every step to
+# /var/status/ntp.log ("key: value" lines, "result:" last) for the page.
+LOG=/var/status/ntp.log
+D=/var/bewan/ntp.d
+get() { printf 'cd _Services_Time\nget %s\n' "$1" | cli -q 2>/dev/null; }
+mkdir -p /var/status
+log() { echo "$*" >> $LOG; }
+: > $LOG
+log "time before: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+if [ "$(get NTPEnable)" != 1 ] || [ ! -f $D/ntp.conf ]; then
+	log "error: time synchronisation is off, turn it on and save first."
+	log "result: failed"
+	exit 0
+fi
+log "servers: $(get NTPServers)"
+type=lan; [ "$(get NTPInterfaceType)" = WANConnectionDevice ] && type=wan
+ix=$(get NTPInterfaces | cut -d, -f1); ix=${ix:-1}
+ifname=''; servers=''
+if [ $type = wan ]; then
+	ifname=$(cat /var/bewan/wan.d/$ix/ip/ifname 2>/dev/null)
+	servers=$(cat /var/bewan/wan.d/$ix/ip/dnssrvlst 2>/dev/null)
+	[ -n "$(cat /var/bewan/wan.d/$ix/ip/ipaddr 2>/dev/null)" ] || ifname=''
+	log "through: WAN connection $ix (${ifname:-not connected})"
+else
+	ifname=$(cat /var/bewan/lan.d/$ix/ifname 2>/dev/null)
+	servers=$(cat /var/bewan/lan.d/$ix/ip/servers 2>/dev/null)
+	[ -n "$servers" ] || servers=$(cat /var/bewan/lan.d/$ix/ip/routers 2>/dev/null)
+	[ -n "$(cat /var/bewan/lan.d/$ix/ip/ipaddr 2>/dev/null)" ] || ifname=''
+	log "through: local network $ix (${ifname:-no address})"
+fi
+if [ -z "$ifname" ]; then
+	log "error: that interface has no address, the servers can't be reached."
+	log "result: failed"
+	exit 0
+fi
+dns=''
+for s in $servers; do dns="$dns -r $s"; done
+log "DNS: ${servers:-none}"
+/etc/bewan/scripts/time-lock
+ntpd -1sdf $D/ntp.conf -i $ifname $dns -n $D/synced 2>&1 | grep -v '^$' | head -20 | sed 's/^/ntpd: /' >> $LOG
+/etc/bewan/scripts/time-unlock
+log "time after: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+r=failed; grep -q '^ntpd: reply from' $LOG && r=ok
+# also for the Status page (init.d/ntp's script writes it on every periodic synchronisation)
+printf 'last=%s\nresult=%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" $r > /var/status/ntpsync
+if [ $r = ok ]; then
+	log "result: synchronized"
+else
+	log "result: failed (no server answered)"
+fi
+true

@@ -1,0 +1,23 @@
+#!/bin/ash
+# /etc/bewan/scripts/errscan: collects log lines that point at a real problem (run by tetherd every
+# round) into /nvram/ni-errors, which survives reboots (a softdog reboot leaves its cause there);
+# the Status page shows how many there are until they are marked as examined (scripts/errors-ack).
+# Stock priorities are no help: link up is "crit", lighttpd start "err". Patterns below.
+E=/nvram/ni-errors
+SEEN=/var/run/ni-errseen
+NOW=/var/run/ni-err.now
+PAT='SOFTDOG: (manually stopped|Expired)|: not found|Segmentation fault|segfault|Oops|Kernel panic|BUG: |Unhandled kernel|unaligned access|line [0-9]+: |syntax error|parameter not set|Out of memory|oom-killer|dnsmasq-ni|dotproxy not running|dotproxy: (TLS setup|cannot listen|psa_crypto)|dropbearkey failed|host key unreadable|insmod .* failed|tetherd: .*(failed|error)'
+IGN='CheckSession has failed'
+logread 2>/dev/null | grep -E "$PAT" | grep -vE "$IGN" > $NOW
+[ -s $NOW ] || exit 0
+touch $SEEN
+# lines not seen yet this boot (busybox 1.17 grep has no -x; awk with an empty first file would
+# read the second one as the first)
+if [ -s $SEEN ]; then new=$(awk 'NR == FNR { s[$0] = 1; next } !($0 in s)' $SEEN $NOW); else new=$(cat $NOW); fi
+[ -n "$new" ] || exit 0
+echo "$new" >> $SEEN
+d=$(date '+%Y-%m-%d %H:%M')
+echo "$new" | sed "s/^/$d | /" >> $E
+# keep the last 100
+[ $(wc -l < $E) -gt 100 ] && { tail -n 100 $E > $E.tmp; mv $E.tmp $E; }
+true

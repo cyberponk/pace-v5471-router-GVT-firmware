@@ -1,0 +1,5 @@
+#!/bin/ash
+# /etc/bewan/scripts/restricted_shell: login shell of the SSH / Telnet user (User_2, "shell").
+# The stock one chrooted into the diag environment (/home/diag), which this firmware does not
+# have; SSH and Telnet are off by default and the account has its own password (Account page).
+exec /bin/ash -l "$@"

@@ -1,0 +1,43 @@
+#!/bin/sh
+# /etc/bewan/ip-up-lan.d/S02-apnet
+# called from /etc/bewan/scripts/ip-up-lan through sh, and from rc2.d/S98-apnet
+# No environement variable
+# $LANID = lan interface index
+#
+# AP mode: there is no WAN, so the box itself routes and resolves
+# through the LAN gateway (static Gateway, or router option of the DHCP lease).
+# Also keeps a link-local rescue address so the web UI stays reachable at
+# 169.254.25.1 when no DHCP server answers.
+# Sourced with an EXIT trap that reboots: never call exit here.
+
+ipup_lan_apnet() {
+  [ "$LANID" = 1 ] || return 0
+  # Router mode: WAN scripts own the default route and DNS
+  [ "${Device_OperatingMode:-AP}" = AP ] || return 0
+  local ifname=`cat $LAND/$LANID/ifname 2>/dev/null`
+  [ "$ifname" = '' ] && return 0
+
+  ip addr add 169.254.25.1/16 dev $ifname 2>/dev/null
+
+  local router=`cat $LAND/$LANID/ip/routers 2>/dev/null`
+  router=${router%% *}
+  if [ "$router" != '' ]; then
+    ip route replace default via $router dev $ifname 2>&1 | base_log - debug
+  fi
+
+  local servers=`cat $LAND/$LANID/ip/servers 2>/dev/null | tr ',' ' '`
+  [ "$servers" = '' ] && servers=$router
+  [ "$servers" = '' ] && return 0
+  local srv pid
+  rm -f $RESOLV
+  touch $RESOLV
+  chmod 644 $RESOLV
+  for srv in $servers; do
+    echo nameserver $srv >>$RESOLV
+  done
+  pid=`cat /var/run/dnsmasq.pid 2>/dev/null`
+  [ "$pid" != '' ] && kill -HUP $pid 2>/dev/null
+  return 0
+}
+
+ipup_lan_apnet

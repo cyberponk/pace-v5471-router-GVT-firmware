@@ -1,0 +1,215 @@
+#!/bin/ash
+# /etc/bewan/lib/ni-guard: firewall rules the firmware has no setting for, sourced by tetherd and
+# re-asserted every round (guard_round): the firmware flushes and rebuilds its chains on every
+# WAN/LAN event.
+# - acsd (Broadcom auto channel, TCP 5916, no authentication) only from the router itself
+# - the phone (eth3G, USB tethering) is an Internet link: nothing new comes in from it, as on the WAN
+# - Wi-Fi client isolation: Device_WiFiIsolateDefault (1 = Wi-Fi devices are isolated unless
+#   allowed) and Device_WiFiIsolate ("mac=1,mac=0": per-device isolate / allow). An isolated device
+#   reaches the Internet, the router's DNS and DHCP (and, in AP mode, the main router) only:
+#   - ebtables FORWARD: no bridged frames between it and the wired LAN / other ports
+#   - ebtables INPUT marks its frames (MARK_ISO); iptables then lets them reach only DNS, DHCP
+#     and ping on the router, and (router mode) not the network on the WAN side
+#   - the driver forwards Wi-Fi to Wi-Fi itself, without the bridge, and this kernel's bridge has
+#     no hairpin mode: wl ap_isolate (all Wi-Fi devices apart from each other) is on while any
+#     device is isolated
+# - DNS over TLS forwarder (dotproxy) restarted if it died (started by scripts/dnsmasq-ni)
+# - upstream DNS servers for dnsmasq 2.93: resolv.conf without the GVT "@source" suffix
+# - mDNS (<hostname>.local): the Broadcom igmp-snooping rule at the top of ebtables INPUT drops the
+#   multicast queries to the router (224.0.0.251 / ff02::fb): accepted before it
+# Needs: MODE, LAN, log(), param() from tetherd.
+
+MARK_ISO=0x40000000
+G_SIG=''
+
+# jump $3 at the top of $2 in $1 (iptables/ip6tables), the firmware's own rules after it
+g_top() {
+	$1 -nL $2 2>/dev/null | sed -n 3p | grep -q "^$3 " && return
+	while $1 -D $2 -j $3 2>/dev/null; do :; done
+	$1 -I $2 1 -j $3
+}
+
+# empty chain $2 in $1 (created if missing)
+g_chain() {
+	$1 -N $2 2>/dev/null
+	$1 -F $2
+}
+
+# isolation lists from the config: ISO_DEF (0/1), ISO_ON / ISO_OFF (MACs set to isolate / allow)
+g_iso_conf() {
+	local e m v
+	ISO_DEF=$(param WiFiIsolateDefault); [ "$ISO_DEF" = 1 ] || ISO_DEF=0
+	ISO_ON=''; ISO_OFF=''
+	for e in $(param WiFiIsolate | tr ',' ' '); do
+		m=$(echo "${e%%=*}" | tr 'A-F' 'a-f'); v=${e#*=}
+		case "$m" in [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) ;; *) continue ;; esac
+		[ "$v" = 1 ] && ISO_ON="$ISO_ON $m"
+		[ "$v" = 0 ] && ISO_OFF="$ISO_OFF $m"
+	done
+	ISO_ACTIVE=0
+	[ $ISO_DEF = 1 ] || [ -n "$ISO_ON" ] && ISO_ACTIVE=1
+	# AP mode: the main router (gateway on the LAN bridge) stays reachable
+	GW_MAC=''
+	if [ "$MODE" != Router ] && [ $ISO_ACTIVE = 1 ]; then
+		set -- $(ip route show 2>/dev/null | grep "^default via .* dev $LAN" | head -1)
+		[ -n "${3:-}" ] && GW_MAC=$(ip neigh show ${3} dev $LAN 2>/dev/null | sed -n 's/.* lladdr \([0-9a-f:]*\).*/\1/p' | head -1)
+	fi
+}
+
+# frames from a Wi-Fi device: isolated ones go to chain $1
+g_eb_from() {
+	local m
+	if [ $ISO_DEF = 1 ]; then
+		for m in $ISO_OFF; do ebtables -A $2 -s $m -j RETURN; done
+		ebtables -A $2 -j $1
+	else
+		for m in $ISO_ON; do ebtables -A $2 -s $m -j $1; done
+	fi
+}
+
+g_eb_to() {
+	local m
+	ebtables -A $2 -d Multicast -j RETURN
+	if [ $ISO_DEF = 1 ]; then
+		for m in $ISO_OFF; do ebtables -A $2 -d $m -j RETURN; done
+		ebtables -A $2 -j $1
+	else
+		for m in $ISO_ON; do ebtables -A $2 -d $m -j $1; done
+	fi
+}
+
+g_ebtables() {
+	local c
+	for c in NI_WF NI_WF_FROM NI_WF_FX NI_WF_TO NI_WF_TX NI_WI NI_WI_FROM NI_WI_MARK; do
+		ebtables -N $c 2>/dev/null
+		ebtables -F $c
+	done
+	ebtables -L FORWARD 2>/dev/null | grep -q -- '-j NI_WF' || ebtables -A FORWARD -j NI_WF
+	ebtables -L INPUT 2>/dev/null | grep -q -- '-j NI_WI' || ebtables -A INPUT -j NI_WI
+	[ $ISO_ACTIVE = 1 ] || return
+	ebtables -A NI_WF -i wl+ -j NI_WF_FROM
+	ebtables -A NI_WF -o wl+ -j NI_WF_TO
+	g_eb_from NI_WF_FX NI_WF_FROM
+	g_eb_to NI_WF_TX NI_WF_TO
+	if [ -n "$GW_MAC" ]; then
+		ebtables -A NI_WF_FX -d $GW_MAC -j RETURN
+		ebtables -A NI_WF_FX -d Broadcast -j RETURN
+		ebtables -A NI_WF_TX -s $GW_MAC -j RETURN
+	fi
+	ebtables -A NI_WF_FX -j DROP
+	ebtables -A NI_WF_TX -j DROP
+	ebtables -A NI_WI -i wl+ -j NI_WI_FROM
+	g_eb_from NI_WI_MARK NI_WI_FROM
+	ebtables -A NI_WI_MARK -j mark --mark-or $MARK_ISO --mark-target CONTINUE
+}
+
+g_iptables() {
+	local sub=$1
+	# IPv4 input
+	g_chain iptables NI_INPUT
+	iptables -A NI_INPUT -p tcp --dport 5916 ! -i lo -j DROP
+	iptables -A NI_INPUT -i eth3G -m state --state ESTABLISHED,RELATED -j RETURN
+	iptables -A NI_INPUT -i eth3G -p udp --dport 68 -j RETURN
+	iptables -A NI_INPUT -i eth3G -j DROP
+	g_chain iptables NI_ISO
+	if [ $ISO_ACTIVE = 1 ]; then
+		iptables -A NI_INPUT -m mark --mark $MARK_ISO/$MARK_ISO -j NI_ISO
+		iptables -A NI_ISO -m state --state ESTABLISHED,RELATED -j RETURN
+		iptables -A NI_ISO -p udp --dport 53 -j RETURN
+		iptables -A NI_ISO -p tcp --dport 53 -j RETURN
+		iptables -A NI_ISO -p udp --dport 67 -j RETURN
+		iptables -A NI_ISO -p icmp -j RETURN
+		iptables -A NI_ISO -j DROP
+	fi
+	# IPv4 forward: nothing new from the phone; isolated Wi-Fi devices not to the WAN-side network
+	g_chain iptables NI_FORWARD
+	iptables -A NI_FORWARD -i eth3G -m state --state ESTABLISHED,RELATED -j RETURN
+	iptables -A NI_FORWARD -i eth3G -j DROP
+	[ $ISO_ACTIVE = 1 ] && [ -n "$sub" ] && iptables -A NI_FORWARD -m mark --mark $MARK_ISO/$MARK_ISO -d $sub -j DROP
+	# IPv6
+	g_chain ip6tables NI_INPUT
+	ip6tables -A NI_INPUT -i eth3G -m state --state ESTABLISHED,RELATED -j RETURN
+	ip6tables -A NI_INPUT -i eth3G -p icmpv6 -j RETURN
+	ip6tables -A NI_INPUT -i eth3G -p udp --dport 546 -j RETURN
+	ip6tables -A NI_INPUT -i eth3G -j DROP
+	g_chain ip6tables NI_ISO
+	if [ $ISO_ACTIVE = 1 ]; then
+		ip6tables -A NI_INPUT -m mark --mark $MARK_ISO/$MARK_ISO -j NI_ISO
+		ip6tables -A NI_ISO -m state --state ESTABLISHED,RELATED -j RETURN
+		ip6tables -A NI_ISO -p udp --dport 53 -j RETURN
+		ip6tables -A NI_ISO -p tcp --dport 53 -j RETURN
+		ip6tables -A NI_ISO -p udp --dport 547 -j RETURN
+		ip6tables -A NI_ISO -p icmpv6 -j RETURN
+		ip6tables -A NI_ISO -j DROP
+	fi
+	g_chain ip6tables NI_FORWARD
+	ip6tables -A NI_FORWARD -i eth3G -m state --state ESTABLISHED,RELATED -j RETURN
+	ip6tables -A NI_FORWARD -i eth3G -j DROP
+}
+
+# chains missing (firmware restart) or emptied?
+g_lost() {
+	iptables -nL NI_INPUT >/dev/null 2>&1 || return 0
+	ip6tables -nL NI_INPUT >/dev/null 2>&1 || return 0
+	[ "$(iptables -nL NI_INPUT 2>/dev/null | wc -l)" -gt 2 ] || return 0
+	ebtables -L NI_WF >/dev/null 2>&1 || return 0
+	ebtables -L FORWARD 2>/dev/null | grep -q -- '-j NI_WF' || return 0
+	ebtables -L INPUT 2>/dev/null | grep -q -- '-j NI_WI' || return 0
+	[ $ISO_ACTIVE = 0 ] || ebtables -L NI_WF 2>/dev/null | grep -q -- '-j NI_WF_FROM' || return 0
+	return 1
+}
+
+# Wi-Fi to Wi-Fi traffic in the driver
+g_apiso() {
+	local i v
+	for i in $(ls /sys/class/net 2>/dev/null | grep '^wl'); do
+		v=$(wl -i $i ap_isolate 2>/dev/null) || continue
+		[ "$v" = "$ISO_ACTIVE" ] || wl -i $i ap_isolate $ISO_ACTIVE 2>/dev/null
+	done
+}
+
+g_dot() {
+	local cmd
+	[ -f /var/run/dotproxy.cmd ] || return
+	pidof dotproxy >/dev/null && return
+	cmd=$(cat /var/run/dotproxy.cmd)
+	log "dotproxy not running, restarting"
+	start-stop-daemon -S -b -x /usr/sbin/dotproxy -- $cmd
+}
+
+g_mdns() {
+	ebtables -L INPUT 2>/dev/null | sed -n 4,5p | grep -q '1:0:5e:0:0:fb' && return
+	while ebtables -D INPUT -d 01:00:5e:00:00:fb -j ACCEPT 2>/dev/null; do :; done
+	while ebtables -D INPUT -d 33:33:00:00:00:fb -j ACCEPT 2>/dev/null; do :; done
+	ebtables -I INPUT 1 -d 33:33:00:00:00:fb -j ACCEPT
+	ebtables -I INPUT 1 -d 01:00:5e:00:00:fb -j ACCEPT
+}
+
+g_resolv() {
+	local new
+	grep -q '^resolv-file=/var/bewan/resolv.dnsmasq' /var/bewan/dnsmasq.conf 2>/dev/null || return
+	new=$(sed 's/^\(nameserver [^@ ]*\)@.*/\1/' /var/bewan/resolv.conf 2>/dev/null)
+	[ "$new" = "$(cat /var/bewan/resolv.dnsmasq 2>/dev/null)" ] && return
+	echo "$new" > /var/bewan/resolv.dnsmasq.tmp && mv /var/bewan/resolv.dnsmasq.tmp /var/bewan/resolv.dnsmasq
+}
+
+# $1: subnet on the WAN side (router mode) or empty
+guard_round() {
+	local sig
+	g_iso_conf
+	sig="$ISO_DEF|$ISO_ON|$ISO_OFF|$GW_MAC|$1"
+	if [ "$sig" != "$G_SIG" ] || g_lost; then
+		[ -n "$G_SIG" ] && [ "$sig" != "$G_SIG" ] && log "Wi-Fi isolation: default $ISO_DEF, isolated:${ISO_ON:- none}, allowed:${ISO_OFF:- none}"
+		g_ebtables
+		g_iptables "$1"
+		G_SIG=$sig
+	fi
+	g_top iptables INPUT NI_INPUT
+	g_top iptables FORWARD NI_FORWARD
+	g_top ip6tables INPUT NI_INPUT
+	g_top ip6tables FORWARD NI_FORWARD
+	g_apiso
+	g_dot
+	g_resolv
+	g_mdns
+}

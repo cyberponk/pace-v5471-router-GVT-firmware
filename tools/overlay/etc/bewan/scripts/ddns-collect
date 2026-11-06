@@ -1,0 +1,13 @@
+#!/bin/ash
+# /etc/bewan/scripts/ddns-collect: merges the dynamic DNS run logs (/var/status/ddns-<account>.log)
+# into /var/status/ddns-all ("account: <n>" before each), included by the DDNS page.
+OUT=/var/status/ddns-all
+{
+	for f in /var/status/ddns-[0-9]*.log; do
+		[ -f "$f" ] || continue
+		n=${f##*/ddns-}
+		echo "account: ${n%.log}"
+		cat "$f"
+	done
+} > $OUT.tmp && mv $OUT.tmp $OUT
+true

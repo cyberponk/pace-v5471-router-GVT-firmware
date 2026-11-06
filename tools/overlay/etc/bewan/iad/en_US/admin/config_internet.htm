@@ -1,0 +1,360 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, cli;
+	var Messages = App.MessageUtil;
+	// Internet = WAN connection 1 on the WAN port (WANEthernetInterface 1 = eth4), its
+	// physical interface 2; VLAN tag = VLANInterface 1 of the WAN port
+	var P = "WANConnectionDevice_1_", V = "WANEthernetInterface_1_VLANInterface_1_";
+	var txt = {
+		noUser: 'Please enter the PPPoE account.',
+		badVlan: 'The VLAN ID must be a number from 1 to 4094.',
+		badMac: 'Please enter the MAC address as six hex pairs, like 00:11:22:33:44:55.',
+		badIp: 'Please provide a valid IP address.',
+		badMask: 'Please provide a valid subnet mask.',
+		badGw: 'Please provide a valid gateway address.',
+		badDns: 'DNS servers must be IP addresses separated by commas.',
+		badProbes: 'Monitoring addresses must be 1 to 4 IP addresses separated by commas.',
+		saved: 'Settings saved. The Internet connection restarts.',
+		apAp: 'The device is in access point mode: the WAN port is not used. Switch to router mode under Operating Mode.',
+		up: 'Connected',
+		down: 'Not connected'
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function trim(s) { return (s || "").replace(/^\s+|\s+$/g, ""); }
+	function val(id) { return trim(el(id).value); }
+	function isIp(s) {
+		var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s), i;
+		if (!m) { return false; }
+		for (i = 1; i <= 4; i++) { if (+m[i] > 255) { return false; } }
+		return true;
+	}
+	function isMask(s) {
+		if (!isIp(s)) { return false; }
+		var p = s.split("."), bits = "", i;
+		for (i = 0; i < 4; i++) { bits += ("00000000" + (+p[i]).toString(2)).slice(-8); }
+		return /^1+0*$/.test(bits);
+	}
+	function show(id, on) { el(id).style.display = on ? "" : "none"; }
+
+	function sections() {
+		var t = el("ctype").value;
+		show("secPpp", t == "PPPoE");
+		show("secStatic", t == "Static");
+		show("rowVid", el("vlan").checked);
+		show("rowMac", el("macclone").checked);
+	}
+
+	function fill() {
+		var w = data.wan, ppp = w.WANPPPConnection || {}, ipc = w.WANIPConnection || {};
+		var phy = (w.PhysicalInterface || {})["2"] || {};
+		var t = "DHCP";
+		if (ppp.Enable == "1") {
+			t = "PPPoE";
+		} else if (ipc.Enable == "1" && ipc.AddressingType == "Static") {
+			t = "Static";
+		}
+		el("ctype").value = t;
+		el("user").value = ppp.Username || "";
+		el("pass").value = "";
+		el("nopass").checked = false;
+		el("svc").value = ppp.PPPoEServiceName || "";
+		el("ip").value = ipc.IPAddress || "";
+		el("mask").value = ipc.SubnetMask || "";
+		el("gw").value = ipc.DefaultGateway || "";
+		el("dns").value = w.DNSServers || "";
+		// VID 0 = untagged (see save)
+		var vid = (data.vlan && data.vlan.VID) || "";
+		el("vlan").checked = !!(phy.VlanNumber && vid != "" && vid != "0");
+		el("vid").value = vid == "0" ? "" : vid;
+		el("macclone").checked = w.MACAddressOverride == "1";
+		el("mac").value = w.MACAddress || "";
+		el("probes").value = (data.probes || "1.1.1.1,8.8.8.8").replace(/,/g, ", ");
+		el("isolate").checked = data.isolate == "1";
+		var dnsf = data.dnsf || {};
+		el("dot").value = /^(cloudflare|quad9|google)$/.test(dnsf.DoT || "") ? dnsf.DoT : "off";
+		el("rebind").checked = dnsf.RebindProtect != "0";
+		var st = w.Status || {};
+		el("stState").innerHTML = st.State == "Up" ? txt.up : txt.down;
+		el("stIp").innerHTML = st.IPAddress || "-";
+		el("stGw").innerHTML = st.Gateways || st.Remote || "-";
+		el("stDns").innerHTML = st.DNSServers || "-";
+		sections();
+	}
+
+	function save() {
+		Messages.clearAll();
+		var t = el("ctype").value, u = {}, pass = el("pass").value, i;
+		u["Services_WANAutoConfig_Enable"] = "0";
+		u[P + "PhysicalInterface_1_Enable"] = "0";
+		u[P + "PhysicalInterface_2_Enable"] = "1";
+		u[P + "PhysicalInterface_3_Enable"] = "0";
+
+		if (t == "PPPoE") {
+			if (val("user") == "") { Messages.error(txt.noUser); return; }
+			u[P + "WANPPPConnection_Enable"] = "1";
+			u[P + "WANIPConnection_Enable"] = "0";
+			u[P + "WANPPPConnection_Username"] = val("user");
+			u[P + "WANPPPConnection_PPPoEServiceName"] = val("svc");
+			u[P + "DNSServers"] = "";
+		} else {
+			u[P + "WANPPPConnection_Enable"] = "0";
+			u[P + "WANIPConnection_Enable"] = "1";
+			u[P + "WANIPConnection_AddressingType"] = t;
+			if (t == "Static") {
+				if (!isIp(val("ip"))) { Messages.error(txt.badIp); return; }
+				if (!isMask(val("mask"))) { Messages.error(txt.badMask); return; }
+				if (!isIp(val("gw"))) { Messages.error(txt.badGw); return; }
+				var dns = val("dns").replace(/\s+/g, ""), list = dns.split(",");
+				for (i = 0; i < list.length; i++) {
+					if (!isIp(list[i])) { Messages.error(txt.badDns); return; }
+				}
+				u[P + "WANIPConnection_IPAddress"] = val("ip");
+				u[P + "WANIPConnection_SubnetMask"] = val("mask");
+				u[P + "WANIPConnection_DefaultGateway"] = val("gw");
+				u[P + "DNSServers"] = dns;
+			} else {
+				u[P + "DNSServers"] = "";
+			}
+		}
+
+		// The WAN always runs on VLAN interface 1 of the WAN port; VID 0 means untagged
+		// (eth4.0 receives the untagged frames: on eth4 itself the Broadcom vlanctl RX table
+		// drops them)
+		var vid = "0";
+		if (el("vlan").checked) {
+			vid = val("vid");
+			if (!/^\d+$/.test(vid) || +vid < 1 || +vid > 4094) { Messages.error(txt.badVlan); return; }
+		}
+		u[P + "PhysicalInterface_2_VlanNumber"] = "1";
+		u[V + "Enable"] = "1";
+		u[V + "VID"] = String(+vid);
+
+		if (el("macclone").checked) {
+			var mac = val("mac").toUpperCase().replace(/-/g, ":");
+			if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { Messages.error(txt.badMac); return; }
+			u[P + "MACAddressOverride"] = "1";
+			u[P + "MACAddress"] = mac;
+		} else {
+			u[P + "MACAddressOverride"] = "0";
+		}
+
+		var probes = val("probes").replace(/\s+/g, ""), plist = probes.split(",");
+		if (plist.length > 4) { Messages.error(txt.badProbes); return; }
+		for (i = 0; i < plist.length; i++) {
+			if (!isIp(plist[i])) { Messages.error(txt.badProbes); return; }
+		}
+		u["Device_InternetProbes"] = probes;
+		u["Device_WANIsolate"] = el("isolate").checked ? "1" : "0";
+		// DNS: written only when changed (each change restarts the DNS server)
+		var dnsf = data.dnsf || {}, dot = el("dot").value, rebind = el("rebind").checked ? "1" : "0";
+		if (dot != (dnsf.DoT || "off")) { u["Services_DnsForwarder_DoT"] = dot; }
+		if (rebind != (dnsf.RebindProtect == "0" ? "0" : "1")) { u["Services_DnsForwarder_RebindProtect"] = rebind; }
+
+		var nopass = t == "PPPoE" && el("nopass").checked;
+		if (nopass) {
+			u[P + "WANPPPConnection_Password"] = "";
+		}
+		var req = cli.rollback().write(u);
+		// empty field = keep the stored password
+		if (t == "PPPoE" && !nopass && pass != "") {
+			req = req.encrypt(P + "WANPPPConnection_Password", pass);
+		}
+		req.commit(function(res) {
+			if (res.error) {
+				Messages.error(res.error);
+			} else {
+				el("pass").value = "";
+				el("nopass").checked = false;
+				data.dnsf = data.dnsf || {};
+				data.dnsf.DoT = dot; data.dnsf.RebindProtect = rebind;
+				Messages.info(txt.saved);
+			}
+		});
+	}
+
+	return {
+		init: function(pageData) {
+			data = pageData;
+			data.wan = data.wan || {};
+			cli = ConfigAccess(data.token);
+			fill();
+			if (data.opmode != "Router") {
+				Messages.info(txt.apAp);
+			}
+			el("ctype").onchange = sections;
+			el("vlan").onchange = sections;
+			el("macclone").onchange = sections;
+			$("#save").bind("click", save);
+			$("#cancel").bind("click", function() { Messages.clearAll(); fill(); });
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	function p(s) { try { return util.parseJson(s); } catch (e) { return undefined; } }
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=WANConnectionDevice,WANEthernetInterface,Services_WANAutoConfig,Device_InternetProbes,Device_WANIsolate,Services_DnsForwarder"-->'),
+		opmode: p('<!--#echo jsonvar="cli=Device_OperatingMode"-->'),
+		wan: p('<!--#echo jsonvar="cli=WANConnectionDevice_1:shadow"-->'),
+		vlan: p('<!--#echo jsonvar="cli=WANEthernetInterface_1_VLANInterface_1"-->'),
+		probes: p('<!--#echo jsonvar="cli=Device_InternetProbes"-->'),
+		isolate: p('<!--#echo jsonvar="cli=Device_WANIsolate"-->'),
+		dnsf: p('<!--#echo jsonvar="cli=Services_DnsForwarder"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_internet');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">Internet</h3>
+<p>Internet connection on the WAN port (router mode). With USB tethering failover on (USB Devices page), a phone plugged into the USB port takes over while this connection is down.</p>
+
+<form action="#" class="form-configuracoes">
+<table class="setupWifiTable">
+
+<thead>
+	<tr><th colspan="2">Connection status</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Status:</td><td id="stState">-</td></tr>
+	<tr><td width="250">IP address:</td><td id="stIp">-</td></tr>
+	<tr><td width="250">Gateway:</td><td id="stGw">-</td></tr>
+	<tr><td width="250">DNS:</td><td id="stDns">-</td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">Connection</th></tr>
+</thead>
+<tbody>
+	<tr>
+		<td width="250">Connection type:<small class="ni-desc">PPPoE: fiber/DSL modem in bridge mode, with an account from the provider. DHCP: the modem or another router gives the address. Fixed IP: address given by the provider.</small></td>
+		<td>
+			<select id="ctype" style="width:auto">
+				<option value="PPPoE">PPPoE</option>
+				<option value="DHCP">DHCP (automatic IP)</option>
+				<option value="Static">Fixed IP</option>
+			</select>
+		</td>
+	</tr>
+</tbody>
+
+<tbody id="secPpp">
+	<tr><td width="250">Account:<small class="ni-desc">PPPoE user name given by the provider (often user@provider).</small></td><td><input type="text" id="user" maxlength="64" /></td></tr>
+	<tr><td width="250">Password:<small class="ni-desc">PPPoE password given by the provider.</small></td><td><input type="password" id="pass" maxlength="64" /> <br/><small>Leave empty to keep the current password.</small><br/>
+		<label class="ni-switch"><input type="checkbox" id="nopass" /><span></span></label> <small>No password</small></td></tr>
+	<tr><td width="250">Service name:<small class="ni-desc">PPPoE service name; only some providers use it.</small></td><td><input type="text" id="svc" maxlength="64" /> <br/><small>Optional. Leave empty unless your provider requires one.</small></td></tr>
+</tbody>
+
+<tbody id="secStatic">
+	<tr><td width="250">IP address:<small class="ni-desc">Fixed public or WAN address given by the provider.</small></td><td><input type="text" id="ip" maxlength="15" /></td></tr>
+	<tr><td width="250">Subnet mask:<small class="ni-desc">Mask given by the provider.</small></td><td><input type="text" id="mask" maxlength="15" /></td></tr>
+	<tr><td width="250">Gateway:<small class="ni-desc">Provider router the Internet traffic is sent to.</small></td><td><input type="text" id="gw" maxlength="15" /></td></tr>
+	<tr><td width="250">DNS servers:<small class="ni-desc">Name servers used by the router and handed to the devices.</small></td><td><input type="text" id="dns" maxlength="64" /> <br/><small>Separated by commas.</small></td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">WAN port</th></tr>
+</thead>
+<tbody>
+	<tr>
+		<td width="250">VLAN tag:<small class="ni-desc">Some fiber providers require the Internet traffic to carry a VLAN number. Off = normal Ethernet (DHCP from another router, most modems).</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="vlan" /><span></span></label></td>
+	</tr>
+	<tr id="rowVid"><td width="250">VLAN ID:<small class="ni-desc">VLAN number required by the provider.</small></td><td><input type="text" id="vid" maxlength="4" /> <br/><small>Only if your provider requires it (for example 600 for Vivo/GVT).</small></td></tr>
+	<tr>
+		<td width="250">MAC address clone:<small class="ni-desc">Use another MAC address on the WAN port, for providers or modems that only accept the device registered before.</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="macclone" /><span></span></label></td>
+	</tr>
+	<tr id="rowMac"><td width="250">MAC address:<small class="ni-desc">MAC address to use on the WAN port.</small></td><td><input type="text" id="mac" maxlength="17" /> <br/><small>For example the address of your previous router.</small></td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">Internet check</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Monitoring addresses:<small class="ni-desc">Pinged every 5 seconds through the WAN and through the USB phone to check that the Internet works: the WAN counts as down when none of them answers. Up to 4 IP addresses separated by commas (default 1.1.1.1, 8.8.8.8).</small></td>
+		<td><input type="text" id="probes" maxlength="64" /></td></tr>
+	<tr><td width="250">Isolate from the WAN-side network:<small class="ni-desc">On: computers on this router's network can't reach the devices of the network the WAN port is connected to (for example the other router's network); the Internet keeps working. Off: they can, like any other address.</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="isolate" /><span></span></label></td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">DNS</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">DNS over TLS:<small class="ni-desc">The router sends the name lookups of all devices encrypted (TLS, port 853) to the chosen provider, so the Internet provider and the network on the WAN side can neither read nor change them. Off: the DNS servers of the connection are used, unencrypted.</small></td>
+		<td>
+			<select id="dot" style="width:auto">
+				<option value="off">Off</option>
+				<option value="cloudflare">Cloudflare (1.1.1.1)</option>
+				<option value="quad9">Quad9 (9.9.9.9, blocks malicious sites)</option>
+				<option value="google">Google (8.8.8.8)</option>
+			</select>
+		</td></tr>
+	<tr><td width="250">DNS rebinding protection:<small class="ni-desc">Answers that point an Internet name to a private address (192.168.x.x, 10.x.x.x...) are dropped, so a web page can't use your browser to reach the router or other local devices. Local names (.local, .lan, .home, .home.arpa, .internal) are allowed.</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="rebind" /><span></span></label></td></tr>
+</tbody>
+
+<tfoot>
+	<tr><td colspan="2">
+		<a id="cancel" class="btn-default-orange-small right"><span>Cancel</span></a>
+		<a id="save"  class="btn-default-orange-small right"><span>Save</span></a>
+	</td></tr>
+</tfoot>
+</table>
+</form>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>

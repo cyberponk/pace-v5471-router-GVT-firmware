@@ -1,0 +1,288 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, cli, rebootCli;
+	var Messages = App.MessageUtil;
+	var P = "LANDevice_1_";
+	var reIp = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+	var txt = {
+		badIp: 'Please provide a valid IP address.',
+		badMask: 'Please provide a valid subnet mask.',
+		badGw: 'Please provide a valid gateway address.',
+		badDns: 'DNS servers must be IP addresses separated by commas.',
+		saved: 'Settings saved. If the address changed, reconnect to the new address (in DHCP mode, look for "PaceAP" in your main router client list, or use 169.254.25.1 with a direct cable).',
+		saving: 'Saving... the page may stop responding if the address changes.',
+		sameMode: 'The device is already in this mode.',
+		switching: 'Mode saved. The device is rebooting, this takes about 2 minutes.',
+		toRouter: 'After the reboot the device is a router: LAN 192.168.25.1, DHCP server on. Connect your PC to it and open http://192.168.25.1',
+		toAp: 'After the reboot the device is an access point: it gets its address by DHCP from your main router (look for "PaceAP"), or use 169.254.25.1 with a direct cable.'
+	};
+
+	// Parameters applied when switching mode (the device reboots afterwards)
+	var modeParams = {
+		AP: {
+			"Device_OperatingMode": "AP",
+			"LANDevice_1_IPInterface_1_AddressingType": "DHCP",
+			"LANDevice_1_HostConfig_DHCPServerEnable": "0",
+			"LANDevice_1_HostConfig6_RAServer_Enable": "0",
+			"Services_WANAutoConfig_Enable": "0",
+			"ModemInterface_1_Enable": "0",
+			"Layer3Forwarding_DefaultConnectionService": "1",
+			// WAN port unused in AP mode
+			"WANConnectionDevice_1_PhysicalInterface_2_Enable": "0",
+			// clock from NTP through the main router (LAN 1); through the WAN it never syncs here
+			"Services_Time_NTPInterfaceType": "LANDevice",
+			"Services_Time_NTPInterfaces": "1"
+		},
+		Router: {
+			"Device_OperatingMode": "Router",
+			"LANDevice_1_IPInterface_1_AddressingType": "Static",
+			"LANDevice_1_IPInterface_1_IPAddress": "192.168.25.1",
+			"LANDevice_1_IPInterface_1_SubnetMask": "255.255.255.0",
+			"LANDevice_1_HostConfig_MinAddress": "192.168.25.2",
+			"LANDevice_1_HostConfig_MaxAddress": "192.168.25.240",
+			"LANDevice_1_HostConfig_DHCPServerEnable": "1",
+			"LANDevice_1_HostConfig6_RAServer_Enable": "1",
+			// Internet on the WAN port, set up on the Internet page (no DSL/GVT auto-detection)
+			"Services_WANAutoConfig_Enable": "0",
+			"Layer3Forwarding_DefaultConnectionService": "1",
+			"WANConnectionDevice_1_PhysicalInterface_1_Enable": "0",
+			"WANConnectionDevice_1_PhysicalInterface_2_Enable": "1",
+			"WANConnectionDevice_1_PhysicalInterface_3_Enable": "0",
+			"Services_Time_NTPInterfaceType": "WANConnectionDevice",
+			"Services_Time_NTPInterfaces": "1"
+		}
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function val(id) { return el(id).value.replace(/\s+/g, ""); }
+
+	function showMode() {
+		var dhcp = el("mode").value == "DHCP";
+		el("staticRows").style.display = dhcp ? "none" : "";
+	}
+
+	function fill() {
+		var isAp = data.opmode != "Router";
+		el("opmode").value = isAp ? "AP" : "Router";
+		el("curOpmode").innerHTML = isAp ? el("opmode").options[0].text : el("opmode").options[1].text;
+		el("apSection").style.display = isAp ? "" : "none";
+		el("mode").value = data.mode == "Static" ? "Static" : "DHCP";
+		el("ip").value = data.ip || "";
+		el("mask").value = data.mask || "";
+		el("gw").value = data.gw || "";
+		el("dns").value = data.dns || "";
+		var st = data.status || {};
+		el("curIp").innerHTML = st.CurrentIPAddress || "-";
+		el("curMask").innerHTML = st.CurrentSubnetMask || "-";
+		el("curGw").innerHTML = st.CurrentRouters || "-";
+		el("curDns").innerHTML = st.CurrentDNSServers || "-";
+		showMode();
+	}
+
+	function save() {
+		Messages.clearAll();
+		var u = {}, mode = el("mode").value, dns = val("dns"), i, list;
+		u[P + "IPInterface_1_AddressingType"] = mode;
+		if (mode == "Static") {
+			if (!reIp.test(val("ip"))) { Messages.error(txt.badIp); return; }
+			if (!reIp.test(val("mask"))) { Messages.error(txt.badMask); return; }
+			if (val("gw") != "" && !reIp.test(val("gw"))) { Messages.error(txt.badGw); return; }
+			u[P + "IPInterface_1_IPAddress"] = val("ip");
+			u[P + "IPInterface_1_SubnetMask"] = val("mask");
+			u[P + "IPInterface_1_Gateway"] = val("gw");
+		}
+		if (dns != "") {
+			list = dns.split(",");
+			for (i = 0; i < list.length; i++) {
+				if (!reIp.test(list[i])) { Messages.error(txt.badDns); return; }
+			}
+		}
+		u[P + "DNSServers"] = dns;
+		Messages.info(txt.saving);
+		cli.rollback().write(u).commit(function(res) {
+			Messages.clearAll();
+			if (res.error) {
+				Messages.error(res.error);
+			} else {
+				Messages.info(txt.saved);
+			}
+		});
+	}
+
+	function applyMode() {
+		Messages.clearAll();
+		var target = el("opmode").value;
+		if (target == (data.opmode == "Router" ? "Router" : "AP")) { Messages.info(txt.sameMode); return; }
+		cli.rollback().write(modeParams[target]).commit(function(res) {
+			if (res.error) {
+				Messages.error(res.error);
+				return;
+			}
+			Messages.info(txt.switching + ' ' + (target == "Router" ? txt.toRouter : txt.toAp));
+			rebootCli.rollback().fct("reboot").commit(function() {});
+		});
+	}
+
+	return {
+		init: function(pageData) {
+			data = pageData;
+			cli = ConfigAccess(data.token);
+			rebootCli = ConfigAccess(data.rebootToken);
+			fill();
+			el("mode").onchange = showMode;
+			$("#save").bind("click", save);
+			$("#cancel").bind("click", function() { Messages.clearAll(); fill(); });
+			$("#applyMode").bind("click", applyMode);
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	function p(s) { try { return util.parseJson(s); } catch (e) { return undefined; } }
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=Device_OperatingMode,LANDevice,Services_WANAutoConfig,ModemInterface,Layer3Forwarding,WANConnectionDevice,Services_Time"-->'),
+		rebootToken: util.parseJson('<!--#echo jsonvar="token=reboot"-->'),
+		opmode: p('<!--#echo jsonvar="cli=Device_OperatingMode"-->'),
+		mode: p('<!--#echo jsonvar="cli=LANDevice_1_IPInterface_1_AddressingType"-->'),
+		ip: p('<!--#echo jsonvar="cli=LANDevice_1_IPInterface_1_IPAddress"-->'),
+		mask: p('<!--#echo jsonvar="cli=LANDevice_1_IPInterface_1_SubnetMask"-->'),
+		gw: p('<!--#echo jsonvar="cli=LANDevice_1_IPInterface_1_Gateway"-->'),
+		dns: p('<!--#echo jsonvar="cli=LANDevice_1_DNSServers"-->'),
+		status: p('<!--#echo jsonvar="cli=LANDevice_1_IPStatus"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_ap');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">Operating Mode</h3>
+
+<form action="#" class="form-configuracoes">
+<table class="setupWifiTable">
+<thead>
+	<tr><th colspan="2">Mode</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Current mode:</td><td id="curOpmode">-</td></tr>
+	<tr>
+		<td width="250">Operating mode:<small class="ni-desc"><b>Access point:</b><br/>Wi-Fi and LAN ports are handed over to the main router, connected to a LAN port.<br/><br/><b>Router:</b><br/>Router mode with Internet on the WAN port, DHCP server, firewall, NAT, Wi-Fi, USB tethering failover.</small></td>
+		<td>
+			<select id="opmode" style="width:auto">
+				<option value="AP">Access point (behind your main router)</option>
+				<option value="Router">Router (WAN port or 3G modem)</option>
+			</select>
+		</td>
+	</tr>
+	<tr><td colspan="2"><small>Changing the mode reboots the device. Router mode uses LAN 192.168.25.1 with DHCP server on; change it later under Local Network.</small></td></tr>
+</tbody>
+<tfoot>
+	<tr><td colspan="2">
+		<a id="applyMode" class="btn-default-orange-small right"><span>Apply and reboot</span></a>
+	</td></tr>
+</tfoot>
+</table>
+
+<div id="apSection">
+<p>Management address of this access point on your main router's network. Wi-Fi and LAN clients get their addresses from the main router.</p>
+<table class="setupWifiTable">
+
+<thead>
+	<tr><th colspan="2">Current status</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">IP address:</td><td id="curIp">-</td></tr>
+	<tr><td width="250">Subnet mask:</td><td id="curMask">-</td></tr>
+	<tr><td width="250">Gateway:</td><td id="curGw">-</td></tr>
+	<tr><td width="250">DNS servers:</td><td id="curDns">-</td></tr>
+	<tr><td width="250">Rescue address:</td><td>169.254.25.1 (direct cable)</td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">Settings</th></tr>
+</thead>
+<tbody>
+	<tr>
+		<td width="250">Address mode:<small class="ni-desc">How this access point gets its management address: by DHCP from the main router, or a fixed address.</small></td>
+		<td>
+			<select id="mode" style="width:auto">
+				<option value="DHCP">Automatic (DHCP from main router)</option>
+				<option value="Static">Static</option>
+			</select>
+		</td>
+	</tr>
+</tbody>
+<tbody id="staticRows">
+	<tr><td width="250">IP address:<small class="ni-desc">Fixed address of this access point on your network, outside the DHCP range of the main router.</small></td><td><input type="text" id="ip" maxlength="15" /></td></tr>
+	<tr><td width="250">Subnet mask:<small class="ni-desc">Same mask as your main network, usually 255.255.255.0.</small></td><td><input type="text" id="mask" maxlength="15" /></td></tr>
+	<tr><td width="250">Gateway (main router):<small class="ni-desc">Address of your main router; used for the device's own Internet access (time, updates).</small></td><td><input type="text" id="gw" maxlength="15" /></td></tr>
+</tbody>
+<tbody>
+	<tr>
+		<td width="250">DNS servers (optional):<small class="ni-desc">DNS servers for the device itself. Empty = use the gateway.</small></td>
+		<td><input type="text" id="dns" maxlength="64" /> <br/><small>Comma separated. Empty = use the gateway.</small></td>
+	</tr>
+</tbody>
+
+<tfoot>
+	<tr><td colspan="2">
+		<a id="cancel" class="btn-default-orange-small right"><span>Cancel</span></a>
+		<a id="save"  class="btn-default-orange-small right"><span>Save</span></a>
+	</td></tr>
+</tfoot>
+</table>
+</div><!--apSection-->
+</form>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>

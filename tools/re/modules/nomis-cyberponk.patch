@@ -1,0 +1,85 @@
+diff --git a/kernel/linux/arch/mips/bcm963xx/Kconfig b/kernel/linux/arch/mips/bcm963xx/Kconfig
+index 11b66c16..0d59de00 100755
+--- a/kernel/linux/arch/mips/bcm963xx/Kconfig
++++ b/kernel/linux/arch/mips/bcm963xx/Kconfig
+@@ -48,6 +48,16 @@ config BCM963268
+ 	select SYS_SUPPORTS_SMP
+ 	select NR_CPUS_DEFAULT_2
+ 	select BRCM_DCACHE_SHARED
++	# Not in the upstream GPL mirror (normally wired in by Broadcom's profile
++	# layer, absent from this checkout): the BCM63168/963268-family SoC has
++	# working EHCI/OHCI USB host controllers, confirmed independently from
++	# the real router's own shipped lib/modules/2.6.30/kernel/drivers/usb/
++	# host/{ehci,ohci}-hcd.ko. Needed so CONFIG_USB (and usbnet/rndis_host/
++	# cdc_ether under it) becomes selectable at all — USB_ARCH_HAS_OHCI/EHCI
++	# have no prompt of their own and default to n on non-PCI MIPS without
++	# this.
++	select USB_ARCH_HAS_OHCI
++	select USB_ARCH_HAS_EHCI
+ 
+ endchoice
+ 
+diff --git a/kernel/linux/drivers/net/usb/cdc_ether.c b/kernel/linux/drivers/net/usb/cdc_ether.c
+index 3dab9475..8648a5fe 100644
+--- a/kernel/linux/drivers/net/usb/cdc_ether.c
++++ b/kernel/linux/drivers/net/usb/cdc_ether.c
+@@ -435,7 +435,7 @@ static int cdc_bind(struct usbnet *dev, struct usb_interface *intf)
+ 		return status;
+ 	}
+ 	
+-#if 1 //__ZyXEL__, I-Wei Lin: Ssupport USB LED   
++#if 0 //__ZyXEL__, I-Wei Lin: Ssupport USB LED   (cyberponk: off, MitraStar-only kernel function, absent on the V5471)
+ 	USB_LED_Control_MSTC(dev->udev->portnum, 0x01);
+ #endif
+ 
+diff --git a/kernel/linux/include/linux/compiler-gcc6.h b/kernel/linux/include/linux/compiler-gcc6.h
+new file mode 100644
+index 00000000..613a01be
+--- /dev/null
++++ b/kernel/linux/include/linux/compiler-gcc6.h
+@@ -0,0 +1,11 @@
++/*
++ * gcc 6 shim for this 2.6.30-era tree: include/linux/compiler-gcc.h dispatches on
++ * __GNUC__ to compiler-gcc{2,3,4}.h, with no entry past gcc4 (predates gcc5/6).
++ * gcc4's shim (branch-prediction/bitfield macros, all still valid on gcc6) is the
++ * closest supported one and is API-compatible for our purposes — just a missing
++ * file problem, not a real incompatibility.
++ *
++ * Not from upstream Linux; added locally for this cross-build. See
++ * tools/re/modules/BUILD_PLAN.md for why.
++ */
++#include <linux/compiler-gcc4.h>
+diff --git a/kernel/linux/include/linux/netdevice.h b/kernel/linux/include/linux/netdevice.h
+index 00264a0b..72f85dff 100644
+--- a/kernel/linux/include/linux/netdevice.h
++++ b/kernel/linux/include/linux/netdevice.h
+@@ -927,6 +927,13 @@ struct net_device
+ 	/* GARP */
+ 	struct garp_port	*garp_port;
+ 
++	/* cyberponk: the Pace V5471 kernel's net_device has 8 more bytes before `dev`
++	 * than this (ZyXEL/MitraStar) tree: router free_netdev() does put_device(dev + 0x258),
++	 * this header gives 0x250. Unknown vendor fields (NETPOLL is absent on the router);
++	 * padded so `dev` and everything after it (gso_max_size 0x31c, compat ops 0x344..,
++	 * sizeof 0x370) match the router. Verified by tools/re/probe/fingerprint.txt. */
++	void			*ni_pace_pad[2];
++
+ 	/* class/net/name entry */
+ 	struct device		dev;
+ 	/* space for optional statistics and wireless sysfs groups */
+diff --git a/kernel/linux/include/linux/usb/usbnet.h b/kernel/linux/include/linux/usb/usbnet.h
+index 742ae766..487f3a2f 100644
+--- a/kernel/linux/include/linux/usb/usbnet.h
++++ b/kernel/linux/include/linux/usb/usbnet.h
+@@ -23,7 +23,10 @@
+ #define	__LINUX_USB_USBNET_H
+ 
+ #if 1 // __MSTC__, Richard Huang, For Telefonica 3G WAN backup, __TELEFONICA__, MitraStar Chehuai, 20110617
+-#define ENABLE_LKUD_NOTIFY 1
++/* cyberponk: off — calls lkud_notify_userspace(), a ZyXEL/MitraStar kernel hook for their
++ * 3G-backup daemon that the V5471 kernel doesn't have (usbnet.ko failed to load:
++ * "Unknown symbol lkud_notify_userspace"). Only removes those notifications. */
++#define ENABLE_LKUD_NOTIFY 0
+ #if ENABLE_LKUD_NOTIFY
+ #include <linux/klink_updown.h>
+ #endif

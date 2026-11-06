@@ -1,0 +1,32 @@
+#!/bin/ash
+# /etc/bewan/scripts/ddns-now <account>: forced dynamic DNS update (the DDNS page's update button, via
+# init.d/dyndns-now). Writes "running" at once, then the update script's own log replaces it
+# (/var/status/ddns-<account>.log, last line "result: ...").
+ID=${1:-1}
+COLLECT=/etc/bewan/scripts/ddns-collect
+LOG=/var/status/ddns-$ID.log
+CMD=/var/bewan/dyndns.d/dyndns-$ID.sh
+mkdir -p /var/status
+{ echo "time: $(date '+%Y-%m-%d %H:%M:%S')"; echo "update: requested"; echo "status: running"; } > $LOG
+$COLLECT
+# the account may have been saved in the same commit: configd then runs init.d/dyndns several
+# times (stop/start per changed field, seconds apart), removing and rewriting the script. Wait
+# until it exists and has not been rewritten for 5 s (at most 60 s).
+sleep 2
+i=0
+while [ $i -lt 60 ]; do
+	if [ -x $CMD ] && [ $(( $(date +%s) - $(date -r $CMD +%s) )) -ge 5 ]; then break; fi
+	sleep 1; i=$(($i + 1))
+done
+if [ ! -x $CMD ]; then
+	{ echo "time: $(date '+%Y-%m-%d %H:%M:%S')"; echo "error: Dynamic DNS is disabled or not configured, enable it and save first."
+	  echo "result: failed"; } > $LOG
+	$COLLECT
+	exit 0
+fi
+# a periodic run may hold the lock: wait for it (up to 30 s)
+i=0
+while [ -d /var/bewan/lock/dyndns-$ID.d ] && [ $i -lt 30 ]; do sleep 1; i=$(($i + 1)); done
+$CMD force
+grep -q '^result:' $LOG 2>/dev/null || { echo "result: failed (the update did not run)" >> $LOG; $COLLECT; }
+true

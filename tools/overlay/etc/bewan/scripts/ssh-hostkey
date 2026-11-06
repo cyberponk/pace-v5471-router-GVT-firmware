@@ -1,0 +1,38 @@
+#!/bin/ash
+# /etc/bewan/scripts/ssh-hostkey: per-device SSH host key (ed25519) for dropbear, called by init.d/inetd
+# before it enables SSH. The key is kept in the configuration (Device_SSHHostKey, hex) so it
+# survives reboots and firmware upgrades; the first time, it is generated here and saved in the
+# background (init.d/inetd runs inside configd, which holds the configuration until it returns).
+KEY=/var/bewan/ssh/dropbear_ed25519_host_key
+FP=/var/status/sshkey
+# fingerprint for the Account settings page
+ready() {
+	mkdir -p /var/status
+	echo "fingerprint=$(/usr/sbin/dropbearkey -y -f $KEY 2>/dev/null | sed -n 's/^Fingerprint: //p')" > $FP
+	exit 0
+}
+mkdir -p /var/bewan/ssh
+chmod 700 /var/bewan/ssh
+[ -s $KEY ] && ready
+hex=$(printf 'cd _Device\nget SSHHostKey\n' | cli -q 2>/dev/null)
+case "$hex" in
+*[!0-9a-f]*|'') hex='' ;;
+esac
+if [ -n "$hex" ]; then
+	# hex -> binary through octal escapes (busybox printf has no \x)
+	printf "$(echo "$hex" | sed 's/../& /g' | awk 'BEGIN { for (i = 0; i < 256; i++) h[sprintf("%02x", i)] = i }
+		{ for (i = 1; i <= NF; i++) printf "\\%03o", h[$i] }')" > $KEY.tmp
+	chmod 600 $KEY.tmp
+	if /usr/sbin/dropbearkey -y -f $KEY.tmp >/dev/null 2>&1; then
+		mv $KEY.tmp $KEY
+		ready
+	fi
+	logger -t ssh-hostkey "saved host key unreadable, making a new one"
+	rm -f $KEY.tmp
+fi
+/usr/sbin/dropbearkey -t ed25519 -f $KEY >/dev/null 2>&1 || { logger -t ssh-hostkey "dropbearkey failed"; exit 1; }
+logger -t ssh-hostkey "new host key: $(/usr/sbin/dropbearkey -y -f $KEY 2>/dev/null | sed -n 's/^Fingerprint: //p')"
+hex=$(hexdump -v -e '/1 "%02x"' $KEY)
+# saved once configd is free again
+( sleep 5; printf 'cd _Device\nset SSHHostKey %s\nfcommit\n' "$hex" | cli -s >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+ready

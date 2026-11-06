@@ -1,0 +1,7 @@
+#!/bin/sh
+# /etc/bewan/init.d/dyndns-now: onchange of Services_DynDNS_N_UpdateNow (the DDNS page's Update now
+# button writes a new value). Sourced by configd (dash, set -u): only starts the update in the
+# background and returns; the result goes to /var/status/ddns-<id>.log.
+# account index: as for init.d/dyndns (DYNDNS_ID, or the second argument)
+start-stop-daemon -S -b -x /etc/bewan/scripts/ddns-now -- ${DYNDNS_ID:-${2:-1}}
+true

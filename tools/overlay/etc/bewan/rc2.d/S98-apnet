@@ -1,0 +1,6 @@
+#!/bin/sh
+# Called from /etc/bewan/rc2
+# Re-apply AP route/DNS/rescue address once all rc scripts are done
+# (WAN scripts may have rewritten resolv.conf after LAN came up).
+
+( LANID=1; . /etc/bewan/ip-up-lan.d/S02-apnet )

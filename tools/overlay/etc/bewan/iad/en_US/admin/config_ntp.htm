@@ -1,0 +1,266 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, cli, polling = null, ticker = null;
+	var Messages = App.MessageUtil;
+	var P = "Services_Time_";
+	var txt = {
+		badServers: 'NTP servers must be 1 to 4 host names or IP addresses separated by commas.',
+		badTz: 'Please enter a time zone in POSIX format, for example BRT3 or CET-1CEST,M3.5.0,M10.5.0/3.',
+		saved: 'Settings saved.',
+		running: 'Synchronizing...',
+		finished: 'Synchronization finished, see the log below.',
+		timeout: 'No answer from the router after 60 seconds.',
+		yes: 'Yes',
+		no: 'Not yet',
+		viaLan: 'Local network (the main router), access point mode',
+		viaWan: 'Internet connection (WAN), router mode',
+		noLog: 'No synchronization run from this page yet.'
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function trim(s) { return (s || "").replace(/^\s+|\s+$/g, ""); }
+	function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+	function show(id, on) { el(id).style.display = on ? "" : "none"; }
+
+	// clock.inc ("now: ...") and ntp.inc (the last run) as served by ntp_log.htm
+	function parse(t) {
+		var l = (t || "").split("\n"), i, m, out = { clock: "", log: [], result: "" };
+		for (i = 0; i < l.length; i++) {
+			m = /^([a-zA-Z ]+): (.*)$/.exec(trim(l[i]));
+			if (!m) { continue; }
+			if (m[1] == "now") { out.clock = m[2]; continue; }
+			out.log.push(m[1] + ": " + m[2]);
+			if (m[1] == "result") { out.result = m[2]; }
+		}
+		return out;
+	}
+
+	function showLog(st) {
+		el("log").innerHTML = st.log.length ? esc(st.log.join("\n")) : txt.noLog;
+		if (st.clock) { el("stClock").innerHTML = esc(st.clock); }
+	}
+
+	function tzRows() { show("rowTzCustom", el("tz").value == "custom"); }
+
+	function fill() {
+		var t = data.time;
+		el("enable").checked = t.NTPEnable == "1";
+		el("servers").value = (t.NTPServers || "").replace(/,/g, ", ");
+		var tz = t.LocalTimeZone || "", opts = el("tz").options, i, found = false;
+		for (i = 0; i < opts.length; i++) { if (opts[i].value == tz) { found = true; } }
+		el("tz").value = found ? tz : "custom";
+		el("tzCustom").value = found ? "" : tz;
+		el("stSync").innerHTML = t.NTPSynchronized == "1" ? txt.yes : txt.no;
+		el("stVia").innerHTML = t.NTPInterfaceType == "LANDevice" ? txt.viaLan : txt.viaWan;
+		tzRows();
+	}
+
+	function save() {
+		Messages.clearAll();
+		var u = {}, list = trim(el("servers").value).replace(/\s+/g, "").split(","), i;
+		if (!list.length || list.length > 4) { Messages.error(txt.badServers); return; }
+		for (i = 0; i < list.length; i++) {
+			if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)*[a-zA-Z0-9-]+$/.test(list[i])) { Messages.error(txt.badServers); return; }
+		}
+		var tz = el("tz").value == "custom" ? trim(el("tzCustom").value) : el("tz").value;
+		if (!/^[A-Za-z]{3,}[-+]?\d{1,2}([A-Za-z]{3,}(,M\d+\.\d\.\d(\/[\d:]+)?,M\d+\.\d\.\d(\/[\d:]+)?)?)?$/.test(tz)) {
+			Messages.error(txt.badTz); return;
+		}
+		u[P + "NTPEnable"] = el("enable").checked ? "1" : "0";
+		u[P + "NTPServers"] = list.join(",");
+		u[P + "LocalTimeZone"] = tz;
+		u[P + "LocalTimeZoneArea"] = /^[A-Za-z]+/.exec(tz)[0].toUpperCase();
+		cli.rollback().write(u).commit(function(res) {
+			if (res.error) { Messages.error(res.error); return; }
+			data.time.NTPEnable = u[P + "NTPEnable"]; data.time.NTPServers = u[P + "NTPServers"];
+			data.time.LocalTimeZone = tz;
+			Messages.info(txt.saved);
+		});
+	}
+
+	function poll(cb) {
+		var x = new XMLHttpRequest();
+		x.onreadystatechange = function() {
+			if (x.readyState != 4) { return; }
+			cb(x.status == 200 ? parse(x.responseText) : null);
+		};
+		x.open("GET", "ntp_log.htm?t=" + new Date().getTime(), true);
+		x.send(null);
+	}
+
+	// a new UpdateNow value starts scripts/ntp-now; ntp_log.htm is polled until a new result
+	function update() {
+		Messages.clearAll();
+		if (polling) { return; }
+		var before = el("log").innerHTML, u = {};
+		u[P + "UpdateNow"] = String(new Date().getTime());
+		cli.rollback().write(u).commit(function(res) {
+			if (res.error) { Messages.error(res.error); return; }
+			Messages.info(txt.running);
+			el("log").innerHTML = txt.running;
+			var start = new Date().getTime();
+			polling = setInterval(function() {
+				poll(function(st) {
+					if (!polling || !st) { return; }
+					if (st.result && esc(st.log.join("\n")) != before) {
+						clearInterval(polling); polling = null;
+						showLog(st);
+						el("stSync").innerHTML = /^synchronized/.test(st.result) ? txt.yes : txt.no;
+						Messages.clearAll(); Messages.info(txt.finished);
+					} else if (new Date().getTime() - start > 60000) {
+						clearInterval(polling); polling = null;
+						Messages.clearAll(); Messages.error(txt.timeout);
+					}
+				});
+			}, 2000);
+		});
+	}
+
+	return {
+		init: function(pageData) {
+			data = pageData;
+			data.time = data.time || {};
+			cli = ConfigAccess(data.token);
+			fill();
+			showLog(parse(el("logRaw").innerHTML));
+			el("tz").onchange = tzRows;
+			$("#save").bind("click", save);
+			$("#cancel").bind("click", function() { Messages.clearAll(); fill(); });
+			$("#update").bind("click", update);
+			// router clock (tetherd writes it every 5 s)
+			ticker = setInterval(function() { if (!polling) { poll(function(st) { if (st && st.clock) { el("stClock").innerHTML = esc(st.clock); } }); } }, 5000);
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	function p(s) { try { return util.parseJson(s); } catch (e) { return undefined; } }
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=Services_Time"-->'),
+		time: p('<!--#echo jsonvar="cli=Services_Time"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_ntp');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">NTP Server</h3>
+<p>Sets the router's clock from Internet time servers (NTP) at every connection and once a day, and the time zone used for the logs and the schedules. HTTPS (dynamic DNS, DNS over TLS) needs the right date to check certificates.</p>
+
+<form action="#" class="form-configuracoes">
+<pre id="logRaw" style="display:none"><!--#include file="clock.inc" --><!--#include file="ntp.inc" --></pre>
+<table class="setupWifiTable">
+
+<thead>
+	<tr><th colspan="2">Status</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Router time:</td><td id="stClock">-</td></tr>
+	<tr><td width="250">Synchronized:</td><td id="stSync">-</td></tr>
+	<tr><td width="250">Synchronized through:</td><td id="stVia">-</td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">Settings</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Time synchronization:<small class="ni-desc">On: the clock is set from the servers below. Off: the clock starts at a fixed date at every boot.</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="enable" /><span></span></label></td></tr>
+	<tr><td width="250">NTP servers:<small class="ni-desc">Up to 4 time servers, by name or IP address, separated by commas (default 0.pool.ntp.org, 1.pool.ntp.org, 2.pool.ntp.org; a.ntp.br is the Brazilian one). The interface follows the operating mode: the local network in access point mode, the Internet connection in router mode.</small></td>
+		<td><input type="text" id="servers" maxlength="128" style="width:330px" /></td></tr>
+	<tr><td width="250">Time zone:<small class="ni-desc">Local time shown by the router. Brazil has no daylight saving time since 2019.</small></td>
+		<td>
+			<select id="tz" style="width:auto">
+				<option value="BRT3">Brasília (UTC-3): South, Southeast, Northeast, Goiás, Pará</option>
+				<option value="AMT4">Amazon (UTC-4): Amazonas, Mato Grosso, Rondônia, Roraima</option>
+				<option value="ACT5">Acre (UTC-5)</option>
+				<option value="FNT2">Fernando de Noronha (UTC-2)</option>
+				<option value="ART3">Argentina, Uruguay (UTC-3)</option>
+				<option value="UTC0">UTC</option>
+				<option value="WET0WEST,M3.5.0/1,M10.5.0">Lisbon (UTC+0, summer time)</option>
+				<option value="GMT0BST,M3.5.0/1,M10.5.0">London (UTC+0, summer time)</option>
+				<option value="CET-1CEST,M3.5.0,M10.5.0/3">Central Europe (UTC+1, summer time)</option>
+				<option value="EST5EDT,M3.2.0,M11.1.0">US Eastern (UTC-5, summer time)</option>
+				<option value="CST6CDT,M3.2.0,M11.1.0">US Central (UTC-6, summer time)</option>
+				<option value="MST7MDT,M3.2.0,M11.1.0">US Mountain (UTC-7, summer time)</option>
+				<option value="PST8PDT,M3.2.0,M11.1.0">US Pacific (UTC-8, summer time)</option>
+				<option value="custom">Other (POSIX TZ string)</option>
+			</select>
+		</td></tr>
+	<tr id="rowTzCustom"><td width="250">Time zone (POSIX):<small class="ni-desc">Name and offset west of UTC, optionally the summer time name and rules, for example BRT3 or CET-1CEST,M3.5.0,M10.5.0/3.</small></td>
+		<td><input type="text" id="tzCustom" maxlength="64" /></td></tr>
+</tbody>
+
+<tfoot>
+	<tr><td colspan="2">
+		<a id="cancel" class="btn-default-orange-small right"><span>Cancel</span></a>
+		<a id="save"  class="btn-default-orange-small right"><span>Save</span></a>
+		<a id="update"  class="btn-default-orange-small right"><span>Update now</span></a>
+	</td></tr>
+</tfoot>
+</table>
+
+<table class="setupWifiTable">
+<thead>
+	<tr><th>Synchronization log</th></tr>
+</thead>
+<tbody>
+	<tr><td class="ni-desc-row">Steps of the last synchronization started with Update now: interface and DNS used, the servers' answers (offset and delay in seconds), the time before and after.</td></tr>
+	<tr><td class="ni-log-cell"><pre id="log" class="ni-log">-</pre></td></tr>
+</tbody>
+</table>
+</form>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>

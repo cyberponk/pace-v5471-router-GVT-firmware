@@ -1,0 +1,5 @@
+#!/bin/sh
+# cyberponk: no-op. The GVT version set the WAN VLAN IDs (600/601/602, or 21xx from
+# /nvram/gvt/wanethmode) on every factory reset; the router-mode WAN is now configured on the
+# Internet page and defaults to DHCP, untagged (VID 0). Sourced: keep, never exit.
+true

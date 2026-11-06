@@ -1,0 +1,81 @@
+# Offsets measured in the router kernel (Ghidra decompile, tools/re/kernel_ghidra.sh).
+# name = o__<struct>__<field> (offsetof) or z__<struct> (sizeof); source function in comments.
+o__sk_buff__next 0x00
+o__sk_buff__dev 0x08                # eth_type_trans
+o__sk_buff__destructor 0x0c         # skb_release_head_state
+o__sk_buff__blog_p 0x14
+o__sk_buff__data 0x18               # skb_pull
+o__sk_buff__len 0x1c                # skb_put
+o__sk_buff__recycle_hook 0x28       # __skb_clone
+o__sk_buff__tail 0x34               # skb_put
+o__sk_buff__end 0x38
+o__sk_buff__head 0x3c               # __alloc_skb
+o__sk_buff__users 0x40              # kfree_skb
+o__sk_buff__nfct 0x44               # skb_release_head_state
+o__sk_buff__nfct_reasm 0x48
+o__sk_buff__tc_word 0x54
+o__sk_buff__transport_header 0x58   # copy_skb_header
+o__sk_buff__network_header 0x5c
+o__sk_buff__mac_header 0x60         # eth_type_trans
+o__sk_buff__iif 0x64                # __skb_clone
+o__sk_buff__sk 0x68
+o__sk_buff__dst 0x78                # skb_release_head_state
+o__sk_buff__sp 0x7c
+o__sk_buff__data_len 0xb0           # skb_pull
+o__sk_buff__mac_len 0xb4            # __skb_clone
+o__sk_buff__hdr_len 0xb6
+o__sk_buff__nf_bridge 0xc0          # skb_release_head_state
+o__sk_buff__vlan_count 0xc6         # __skb_clone
+o__sk_buff__vlan_tpid 0xc8
+o__sk_buff__vlan_header 0xcc
+o__sk_buff__rxdev 0xdc
+o__sk_buff__truesize 0xe0
+z__sk_buff 0xe8                     # skb_clone fclone stride, truesize = size + 0xe8
+o__skb_shared_info__gso_size 0x0a   # copy_skb_header
+o__skb_shared_info__gso_segs 0x0c
+o__skb_shared_info__gso_type 0x0e
+z__skb_shared_info 0x158            # __alloc_skb
+o__net_device__name 0x000           # alloc_netdev_mq
+o__net_device__state 0x030          # netif_carrier_on
+o__net_device__napi_list 0x03c      # alloc_netdev_mq (INIT_LIST_HEAD)
+o__net_device__stats 0x050          # dev_get_stats
+o__net_device__netdev_ops 0x0e8     # dev_set_mtu
+o__net_device__header_ops 0x0f0     # ether_setup
+o__net_device__flags 0x0f4
+o__net_device__padded 0x0fc         # alloc_netdev_mq
+o__net_device__mtu 0x100            # ether_setup
+o__net_device__type 0x104
+o__net_device__hard_header_len 0x106
+o__net_device__addr_len 0x130
+o__net_device__dev_addr 0x174       # eth_type_trans
+o__net_device__broadcast 0x194      # ether_setup
+o__net_device___tx 0x1e0            # alloc_netdev_mq
+o__net_device__num_tx_queues 0x1e4
+o__net_device__real_num_tx_queues 0x1e8
+o__net_device__tx_queue_len 0x1ec   # ether_setup
+o__net_device__set_mac_address 0x344  # ether_setup (COMPAT_NET_DEV_OPS)
+o__net_device__validate_addr 0x348
+o__net_device__change_mtu 0x354
+z__net_device 0x370                 # alloc_netdev_mq (priv at ALIGN(0x370, 32) = 0x380)
+o__net_device_ops__ndo_change_mtu 0x34  # dev_set_mtu
+o__net_device_ops__ndo_get_stats 0x40   # dev_get_stats
+o__net_device__gso_max_size 0x31c       # alloc_netdev_mq (stores 0x00010000)
+o__net_device__rx_queue 0x1c0           # alloc_netdev_mq (rx_queue.dev = dev)
+o__net_device__tx_global_lock 0x1f0     # alloc_netdev_mq (spin_lock_init)
+o__net_device__reg_state 0x238          # netif_carrier_on
+z__urb 0x6c                             # usb_alloc_urb / usb_init_urb
+o__urb__urb_list 0x14                   # usb_init_urb only inits anchor_list, not this one; urb_list confirmed via candidate layout + usb_anchor_urb
+o__urb__anchor_list 0x1c                # usb_init_urb (list_head self-init at +0x1c/+0x20)
+o__urb__anchor 0x24                     # usb_anchor_urb (3rd word touched)
+o__usb_device__dev 0x60                 # usb_get_dev
+o__usb_device__actconfig 0x128          # usb_ifnum_to_if
+o__usb_host_config__interface 0x50      # usb_ifnum_to_if
+o__usb_interface__condition 0x14        # usb_driver_claim_interface
+o__usb_interface__dev 0x20              # usb_get_intf
+o__usb_driver__drvwrap 0x34             # usb_driver_claim_interface
+o__device__driver 0x48                  # usb_driver_claim_interface (intf->dev.driver)
+o__device__driver_data 0x4c             # usb_driver_claim_interface (usb_set_intfdata)
+o__net_device__dev 0x258                # free_netdev: put_device(dev + 600)
+z__module 0x11c                         # router's own .ko: .gnu.linkonce.this_module section size
+o__module__init 0xbc                    # relocation for init_module in that section
+o__module__exit 0x114                   # relocation for cleanup_module

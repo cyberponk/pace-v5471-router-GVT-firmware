@@ -1,0 +1,207 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, cli;
+	var Messages = App.MessageUtil;
+	var txt = {
+		saved: 'Settings saved.',
+		none: 'No phone connected',
+		dhcp: 'Connected, waiting for an address',
+		up: 'Connected',
+		disabled: 'Connected, failover disabled',
+		apNote: 'The device is in access point mode: failover is used in router mode only.',
+		noDevices: 'No USB device connected',
+		tPhone: 'Phone (USB tethering)',
+		tPrinter: 'Printer',
+		tModem: '3G modem',
+		tStorage: 'Storage (not supported)',
+		tOther: 'Other'
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function trim(s) { return (s || "").replace(/^\s+|\s+$/g, ""); }
+	function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+	// key=value lines included from /var/status/* (written by tetherd); a missing file gives
+	// the SSI error text instead, which has no such lines
+	function lines(id, key) {
+		var out = [], l = el(id).innerHTML.split("\n"), i, m;
+		for (i = 0; i < l.length; i++) {
+			m = /^([a-z]+)=(.*)$/.exec(trim(l[i]));
+			if (m && (!key || m[1] == key)) { out.push([m[1], m[2]]); }
+		}
+		return out;
+	}
+
+	function devType(drivers) {
+		if (/rndis_host|cdc_ether/.test(drivers)) { return txt.tPhone; }
+		if (/usblp/.test(drivers)) { return txt.tPrinter; }
+		if (/usbserial|option/.test(drivers)) { return txt.tModem; }
+		if (/usb-storage/.test(drivers)) { return txt.tStorage; }
+		return txt.tOther;
+	}
+
+	function status() {
+		var t = {}, l = lines("tetherRaw"), i;
+		for (i = 0; i < l.length; i++) { t[l[i][0]] = l[i][1]; }
+		var st = { unplugged: txt.none, dhcp: txt.dhcp, up: txt.up, disabled: txt.disabled }[t.state] || "-";
+		if (trim(t.device)) { st = esc(trim(t.device)) + " - " + st; }
+		if (t.state == "up" && t.ip) { st += " (" + esc(t.ip) + ")"; }
+		el("tState").innerHTML = st;
+
+		var devs = lines("usbRaw", "usb"), rows = "", f;
+		for (i = 0; i < devs.length; i++) {
+			f = devs[i][1].split("|");
+			rows += '<tr><td width="250">' + esc(trim((f[2] || "") + " " + (f[3] || "")) || f[1] || "-") +
+				'</td><td>' + devType(f[4] || "") + ' <small>(' + esc(f[1] || "") + ')</small></td></tr>';
+		}
+		el("usbList").innerHTML = rows || '<tr><td colspan="2">' + txt.noDevices + '</td></tr>';
+	}
+
+	function fill() {
+		el("failover").checked = data.failover != "0";
+		el("printer").checked = data.printer == "1";
+	}
+
+	function save() {
+		Messages.clearAll();
+		var u = {
+			"Device_TetherFailover": el("failover").checked ? "1" : "0",
+			"Services_Ippos_Enable": el("printer").checked ? "1" : "0"
+		};
+		cli.rollback().write(u).commit(function(res) {
+			if (res.error) {
+				Messages.error(res.error);
+			} else {
+				Messages.info(txt.saved);
+			}
+		});
+	}
+
+	return {
+		init: function(pageData) {
+			data = pageData;
+			cli = ConfigAccess(data.token);
+			fill();
+			status();
+			if (data.opmode != "Router") {
+				Messages.info(txt.apNote);
+			}
+			$("#save").bind("click", save);
+			$("#cancel").bind("click", function() { Messages.clearAll(); fill(); });
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	function p(s) { try { return util.parseJson(s); } catch (e) { return undefined; } }
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=Device_TetherFailover,Services_Ippos_Enable"-->'),
+		opmode: p('<!--#echo jsonvar="cli=Device_OperatingMode"-->'),
+		failover: p('<!--#echo jsonvar="cli=Device_TetherFailover"-->'),
+		printer: p('<!--#echo jsonvar="cli=Services_Ippos_Enable"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_usb');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">USB Devices</h3>
+
+<form action="#" class="form-configuracoes">
+<pre id="tetherRaw" style="display:none"><!--#include file="tether.inc" --></pre>
+<pre id="usbRaw" style="display:none"><!--#include file="usb.inc" --></pre>
+<table class="setupWifiTable">
+
+<thead>
+	<tr><th colspan="2">USB Tethering</th></tr>
+</thead>
+<tbody>
+	<tr><td colspan="2">In router mode, an Android phone plugged into the USB port with USB tethering on is kept ready as a backup Internet connection. While the WAN connection is down (no connection, or no answer from the Internet), all traffic goes through the phone; when the WAN answers again the router switches back. Switching takes about 15 seconds and open connections are restarted.</td></tr>
+	<tr>
+		<td width="250">USB tethering failover:<small class="ni-desc">Enabled: in router mode the phone takes over automatically while the WAN connection is down. Disabled: the phone is not used.</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="failover" /><span></span></label></td>
+	</tr>
+	<tr><td width="250">Phone:</td><td id="tState">-</td></tr>
+</tbody>
+
+<thead>
+	<tr><th colspan="2">Printers</th></tr>
+</thead>
+<tbody>
+	<tr>
+		<td width="250">Share USB printers on the network:<small class="ni-desc">A printer plugged into the USB port can be used by the computers of the local network (IPP printing).</small></td>
+		<td><label class="ni-switch"><input type="checkbox" id="printer" /><span></span></label></td>
+	</tr>
+</tbody>
+
+<tfoot>
+	<tr><td colspan="2">
+		<a id="cancel" class="btn-default-orange-small right"><span>Cancel</span></a>
+		<a id="save"  class="btn-default-orange-small right"><span>Save</span></a>
+	</td></tr>
+</tfoot>
+</table>
+
+<table class="setupWifiTable">
+<thead>
+	<tr><th colspan="2">Connected USB devices</th></tr>
+</thead>
+<tbody id="usbList">
+	<tr><td colspan="2">-</td></tr>
+</tbody>
+</table>
+</form>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>
