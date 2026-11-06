@@ -1,4 +1,4 @@
-# Firmware cyberponk para o Pace V5471
+# Firmware modificado para o Pace V5471
 
 [English](README.en.md) | **Português**
 
@@ -157,7 +157,6 @@ faz e de recuperá-lo. A placa tem um conector de 5 pinos (marcado `SYS`, perto 
 - Configuração: **115200 baud, 8N1**, sem controle de fluxo. O console dá um shell de root (`~ #`).
 - Evite enviar `^` (acento circunflexo) por este console: aqui ele aciona o SysRq.
 
-![Conector com o cabo](docs/images/uart-header.jpg)
 ![Adaptador FT232](docs/images/ftdi-adapter.jpg)
 
 ### Testar sem gravar (boot pela RAM)
