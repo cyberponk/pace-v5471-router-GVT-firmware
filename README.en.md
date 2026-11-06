@@ -20,6 +20,7 @@ of the network daemons, and a set of new pages and services.
 - [Features](#features)
 - [Default settings](#default-settings)
 - [Installing](#installing)
+  - [Opening the case](#opening-the-case)
   - [Serial console (UART)](#serial-console-uart)
   - [Test without flashing (RAM boot)](#test-without-flashing-ram-boot)
   - [Flashing](#flashing)
@@ -131,6 +132,12 @@ To find the access point's address, look for **PaceAP** in your main router's DH
 > Flashing custom firmware can brick the device if something goes wrong. The V5471 has two firmware
 > banks and a boot loader that can RAM-boot an image from the network, so recovery is usually
 > possible, but you do this at your own risk.
+
+### Opening the case
+
+The cover is held by **2 Torx screws hidden under the bottom adhesive label** (the ANATEL sticker), one
+at each far end. Peel the sticker back at the ends to reach them; warm it first with a heat gun or a
+hair dryer if you don't want to ruin it.
 
 ### Serial console (UART)
 

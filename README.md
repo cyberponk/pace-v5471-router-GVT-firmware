@@ -20,6 +20,7 @@ atuais dos serviços de rede e um conjunto de páginas e serviços novos.
 - [Recursos](#recursos)
 - [Configuração padrão](#configuração-padrão)
 - [Instalação](#instalação)
+  - [Abrindo a carcaça](#abrindo-a-carcaça)
   - [Console serial (UART)](#console-serial-uart)
   - [Testar sem gravar (boot pela RAM)](#testar-sem-gravar-boot-pela-ram)
   - [Gravação](#gravação)
@@ -136,6 +137,12 @@ principal, ou abra `http://paceap.local/`.
 > Gravar firmware personalizado pode inutilizar o aparelho se algo der errado. O V5471 tem dois bancos
 > de firmware e um carregador de boot que inicia uma imagem pela rede direto na RAM, então a
 > recuperação normalmente é possível — mas faça por sua conta e risco.
+
+### Abrindo a carcaça
+
+A tampa é presa por **2 parafusos Torx escondidos sob o adesivo de baixo** (a etiqueta da ANATEL), um
+em cada extremidade. Descole a etiqueta nas pontas para alcançá-los; aqueça antes com um soprador
+térmico ou um secador de cabelo se não quiser estragá-la.
 
 ### Console serial (UART)
 
