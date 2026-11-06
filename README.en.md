@@ -1,4 +1,4 @@
-# cyberponk firmware for the Pace V5471
+# Modified firmware for the Pace V5471
 
 **English** | [Português](README.md)
 
@@ -152,7 +152,6 @@ regulators):
 - Settings: **115200 baud, 8N1**, no flow control. A root shell (`~ #`) is available on the console.
 - Avoid sending `^` (caret) over this console: it is a SysRq trigger here.
 
-![Header with the cable](docs/images/uart-header.jpg)
 ![FT232 adapter](docs/images/ftdi-adapter.jpg)
 
 ### Test without flashing (RAM boot)
