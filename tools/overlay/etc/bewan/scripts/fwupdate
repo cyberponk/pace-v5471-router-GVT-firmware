@@ -32,6 +32,9 @@ if ! $CURL -m 30 -H 'Accept: application/vnd.github+json' -A cyberponk-fwupdate 
 	fi
 	done_ error
 fi
+# the API answers minified JSON (one line) to non-browser clients: one "key": value per line
+# (an unescaped {" or ," never occurs inside a JSON string)
+sed -i 's/\([{,[]\)"\([a-z_]*\)":/\1\n"\2": /g' $J
 tag=$(sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' $J | head -1)
 latest=$(echo "$tag" | sed -n 's/^[^0-9]*\([0-9][0-9.]*\)$/\1/p')
 url=$(sed -n 's|^ *"browser_download_url": *"\(https://github.com/'$REPO'/releases/download/[^"]*/cyberponk-v[0-9.]*\.bin\)".*|\1|p' $J | head -1)
@@ -43,7 +46,7 @@ log "latest: $latest"
 log "url: $url"
 sed -n 's/^ *"published_at": *"\([0-9-]*\)T.*/date: \1/p' $J | head -1 >> $ST
 # release notes: the JSON string, one "notes:" line per line
-sed -n 's/^ *"body": *"\(.*\)",\{0,1\}$/\1/p' $J | head -1 | sed 's/\\r//g; s/\\n/\n/g; s/\\"/"/g; s/\\\\/\\/g' |
+sed -n 's/^ *"body": *"\(.*\)"[,}]*$/\1/p' $J | head -1 | sed 's/\\r//g; s/\\n/\n/g; s/\\"/"/g; s/\\\\/\\/g' |
 	head -30 | sed 's/^/notes: /' >> $ST
 # newer = some field greater, compared numerically left to right
 newer=$(echo "$latest $current" | awk '{ n = split($1, a, "."); m = split($2, b, ".");
