@@ -102,8 +102,16 @@ of the network daemons, and a set of new pages and services.
 - **Logged errors notice**: real problems found in the logs (script errors, crashes, watchdog
   reboots) are kept in flash and shown on the Status page as "There are X logged errors that need
   examination", with *Show* and *Mark as examined*.
+- **Online update** (Management → Firmware): *Check for update* looks up the releases of this GitHub
+  repository and shows the release notes; *Install* (after confirmation) downloads the image over
+  HTTPS with certificate checks, verifies it, writes it to the other flash bank and restarts. A `.bin`
+  uploaded by hand on the same page also restarts by itself now.
+- **Backup / Restore** (Management → Backup / Restore): download the settings to a file, restore from a
+  file (date and version shown for confirmation), and keep up to 20 copies on the router itself with a
+  description, to restore or delete later. The files hold the passwords in a decodable form: keep them
+  private.
 - System Logs sorted newest first; descriptions next to every setting; English / Portuguese UI with
-  the language remembered; firmware upgrade from the web page (dual bank).
+  the language remembered.
 - The main router sees the device by name (`PaceAP`, DHCP option 12) and by manufacturer (the unit's
   own Pace MAC address instead of a locally administered one).
 
@@ -180,7 +188,9 @@ mode"):
 From a running alacn or cyberponk firmware (including a RAM-booted one):
 
 - **Web interface**: Management → Firmware, upload `cyberponk-vX.Y.Z.bin`. The image goes to the
-  older bank and becomes the next to boot; the checksum is verified first.
+  older bank and becomes the next to boot; the checksum is verified first. From v1.3.0 the device
+  restarts by itself when done, and *Check for update* on the same page installs new releases from
+  GitHub.
 - **Serial console**:
   ```
   cd /var/tmp && wget http://<pc>:<port>/cyberponk-vX.Y.Z.bin -O ni.bin

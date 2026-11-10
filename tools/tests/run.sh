@@ -13,7 +13,7 @@ for l in en_US pt_BR; do
 	node "$ROOT/tools/tests/test_pages.js" "$IAD/$l/admin"
 done
 
-for f in "$IAD"/*/admin/{config_advanced,services_status,config_usb,changelog,config_ap,config_3g,config_internet,config_ddns,config_lan,config_wireless,admin_password,auth,config_ntp,logread}.htm \
+for f in "$IAD"/*/admin/{config_advanced,services_status,config_usb,changelog,config_ap,config_3g,config_internet,config_ddns,config_lan,config_wireless,admin_password,auth,config_ntp,logread,firmware,config_backup}.htm \
 	"$IAD"/*/js/{menu.js,config_wireless.javascript,admin_password.javascript,logread.javascript}; do
 	python3 -I - "$f" "$T/chk.js" <<'E'
 import re, sys

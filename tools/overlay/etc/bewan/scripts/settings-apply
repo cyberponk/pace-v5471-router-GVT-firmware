@@ -1,0 +1,28 @@
+#!/bin/ash
+# /etc/bewan/scripts/settings-apply <dir>: restore the settings checked by cgi-bin/ni-settings.sh
+# (<dir>/router.diff, notifylist when present) and reboot; configd rebuilds the configuration from
+# factory + router.diff at boot. Like init.d/safe-reboot: the store and save locks are taken once
+# no commit is pending, and kept, so configd can't store the running settings over the restored ones.
+S=${1:-/var/tmp/ni-settings}
+NV=/nvram/bewan
+sleep 2
+[ -s $S/router.diff ] || exit 0
+logger -t settings "restoring settings ($(sed -n 's/^date=//p' $S/info), $(sed -n 's/^firmware=//p' $S/info)), rebooting"
+n=0
+while :; do
+	tnset /var/bewan/lock/store.lock wait
+	tnset /var/bewan/lock/save.lock wait
+	[ -f /var/bewan/tmp/save.diff ] || break
+	rm -f /var/bewan/lock/save.lock /var/bewan/lock/store.lock
+	n=$((n + 1)); [ $n -gt 30 ] && break
+	sleep 1
+done
+mkdir -p $NV
+cp $S/router.diff $NV/router.diff.new && mv $NV/router.diff.new $NV/router.diff
+wc -c < $NV/router.diff > $NV/router.magic
+if [ -f $S/notifylist ]; then cp $S/notifylist $NV/notifylist; else rm -f $NV/notifylist; fi
+rm -rf $S
+sync
+umount /nvram 2>/dev/null
+sync
+/sbin/reboot

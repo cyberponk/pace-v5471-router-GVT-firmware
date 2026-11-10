@@ -12,7 +12,7 @@
 
   python3 -I tools/configure.py          (NI_VERSION=... overrides the version string)
 """
-import os, re, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
@@ -142,19 +142,20 @@ MENU_HIDE_ALWAYS = ['menu_wan_mode', 'menu_bbstats']
 MENU_HIDE_AP = ['menu_internet', 'menu_3g', 'menu_lan', 'menu_applications', 'menu_firewall']
 MENU_LABELS = {
     'en_US': {'menu_ap': 'Operating Mode', 'menu_3g': '3G Modem', 'menu_about': 'About', 'menu_ddns': 'Dynamic DNS', 'menu_ntp': 'NTP Server',
+              'menu_backup': 'Backup / Restore',
               'menu_applications': 'Port Forwarding'},
     'pt_BR': {'menu_ap': 'Modo de Opera&ccedil;&atilde;o', 'menu_3g': 'Modem 3G', 'menu_about': 'Sobre',
-              'menu_ddns': 'DNS Din&acirc;mico', 'menu_ntp': 'Servidor NTP', 'menu_applications': 'Redirecionamento de Portas'},
+              'menu_ddns': 'DNS Din&acirc;mico', 'menu_ntp': 'Servidor NTP', 'menu_backup': 'Backup / Restaura&ccedil;&atilde;o', 'menu_applications': 'Redirecionamento de Portas'},
 }
 # menu order (ids not listed, the hidden ones, follow)
 MENU_ORDER = {
     'menu_settings': ['menu_ap', 'menu_internet', 'menu_3g', 'menu_lan', 'menu_ddns', 'menu_wireless', 'menu_advanced', 'menu_ntp',
                       'menu_firewall', 'menu_applications', 'menu_usb'],
-    'menu_management': ['menu_admin_password', 'menu_resets', 'menu_utilities', 'menu_logread', 'menu_languages',
+    'menu_management': ['menu_admin_password', 'menu_resets', 'menu_backup', 'menu_utilities', 'menu_logread', 'menu_languages',
                         'menu_firmware', 'menu_changelog'],
 }
 NEW_PAGES = ['config_ap.htm', 'config_3g.htm', 'config_internet.htm', 'config_usb.htm', 'config_ddns.htm', 'ddns_log.htm',
-             'config_ntp.htm', 'ntp_log.htm']
+             'config_ntp.htm', 'ntp_log.htm', 'fwupdate_log.htm', 'config_backup.htm']
 
 CHANGELOG = '''<h4>%s</h4>
 <p>* Based on Alacn-181231 (firmware <b>GVT-104452</b>).</p>
@@ -212,6 +213,7 @@ table.setupWifiTable, table.setupWifiTable.ni-wide, table.data-table{ width:1020
     padding:8px 4px; }
 #niWifiClients td .btn-default-orange-small{ float:none; display:inline-block; }
 .ni-warn{ background:#fdecea; border:1px solid #e0a39c; color:#a12c1f; padding:8px 10px; margin:0 0 10px; }
+.ni-ok{ background:#e9f6ec; border:1px solid #9ccfa8; color:#1d6b33; padding:8px 10px; margin:0 0 10px; }
 .ni-pwgen{ float:none !important; display:inline-block; margin-left:6px; vertical-align:middle; }
 .ni-pw{ display:inline-block; width:140px; height:6px; margin-top:6px; background:#ddd; border-radius:3px; vertical-align:middle; overflow:hidden; }
 .ni-pw span{ display:block; height:100%; width:0; border-radius:3px; }
@@ -416,7 +418,9 @@ def inetd(txt):
     txt = sub1(r'\n\s*\[ "\$\?" = "0" \] && test_console_enable=1\n', '\n', txt, 'inetd test console')
     return sub1(r'(\n[ \t]*)if \[ "\$Services_SSH_Enable" = 1 -o "\$\{test_console_enable\}" = 1 \] && \[ -f /usr/sbin/sshd \]; then\n'
                 r'\s*echo "ssh stream \$\{tcp_proto\} nowait root /usr/sbin/sshd sshd -i -d /etc/bewan/dsskey\.bin" >>\$conf_file\n',
-                lambda m: m.group(1) + 'if [ "$Services_SSH_Enable" = 1 ] && [ -f /usr/sbin/dropbear ] && /etc/bewan/scripts/ssh-hostkey; then' +
+                lambda m: m.group(1) + '# Backup / Restore page: settings server (scripts/ni-settings; LAN only, lib/ni-guard)' +
+                m.group(1) + 'echo "8090 stream ${tcp_proto} nowait root /etc/bewan/scripts/ni-settings ni-settings" >>$conf_file' +
+                m.group(1) + 'if [ "$Services_SSH_Enable" = 1 ] && [ -f /usr/sbin/dropbear ] && /etc/bewan/scripts/ssh-hostkey; then' +
                 m.group(1) + '  echo "ssh stream ${tcp_proto} nowait root /usr/sbin/dropbear dropbear -i -r /var/bewan/ssh/dropbear_ed25519_host_key" >>$conf_file\n',
                 txt, 'inetd ssh')
 
@@ -486,7 +490,11 @@ def router_xml(txt):
                 m.group(2) + '<SSHHostKey type="string" writable="1" oid="46"/>\n' +
                 m.group(2) + '<ShellPassword type="password" writable="1" onchange="/etc/bewan/init.d/users" oid="47"/>\n' +
                 # Status page "Mark as examined" (any new value): scripts/errors-ack
-                m.group(2) + '<ErrorsAck type="string" writable="1" onchange="/etc/bewan/init.d/errors-ack" oid="48"/>\n' + m.group(3),
+                m.group(2) + '<ErrorsAck type="string" writable="1" onchange="/etc/bewan/init.d/errors-ack" oid="48"/>\n' +
+                # Firmware page online update buttons ("check.<n>", "install.<n>"): scripts/fwupdate
+                m.group(2) + '<FwUpdate type="string" writable="1" onchange="/etc/bewan/init.d/fwupdate" oid="49"/>\n' +
+                # Backup / Restore page: one-time ticket for scripts/ni-settings (32 hex; "0" = spent)
+                m.group(2) + '<SettingsTicket type="string" writable="1" oid="50"/>\n' + m.group(3),
                 txt, 'router.xml Device end')
 
 
@@ -542,6 +550,8 @@ def menu_js(lang):
                    m.group(2) + item('menu_ap', 'config_ap.htm') + '\n', txt, 'menu_lan')
         txt = sub1(r"(\n(\s*)'<li id=\"menu_internet\">[^\n]*\n)",
                    lambda m: m.group(1) + m.group(2) + item('menu_3g', 'config_3g.htm') + '\n', txt, 'menu_internet')
+        txt = sub1(r"(\n(\s*)'<li id=\"menu_resets\">[^\n]*\n)",
+                   lambda m: m.group(1) + m.group(2) + item('menu_backup', 'config_backup.htm') + '\n', txt, 'menu_resets')
         txt = sub1(r'(id="menu_about"><a class="menu-header" href="about\.htm">)[^<]*', r'\g<1>' + labels['menu_about'],
                    txt, 'menu_about')
         flt = ('\n// cyberponk: hide pages of removed features, and router pages in AP mode\n'
@@ -1048,6 +1058,195 @@ def logread_htm(lang):
     return fn
 
 
+FW_TXT = {
+    'en_US': {'ok': 'Firmware written. The device is restarting with the new version; this takes about 2 minutes. '
+                    'Reload this page afterwards.',
+              'fail': 'The firmware was not written (see the messages below). The device keeps the current version.',
+              'none': 'No result from fwburn in the log. Check the messages below; restart the device from Reset '
+                      'only if they end with "operation successful".',
+              'never': 'Not checked yet.', 'checking': 'Checking GitHub...',
+              'uptodate': 'Up to date: {v} is the latest version.',
+              'available': 'New version available: {v} (published {d}). Current: {c}.',
+              'error': 'Error: ', 'rebooting': 'Firmware written. The device is restarting with the new version; '
+              'this takes about 2 minutes. Reload this page afterwards.',
+              'timeout': 'no answer from the device; check again later.',
+              'confirm': 'Download version {v} from GitHub, write it to the flash and restart the device?',
+              'steps': {'downloading': 'Downloading the new version...', 'checking the image': 'Checking the image...',
+                        'writing to flash (do not power off)': 'Writing to the flash, do not power off...'},
+              'h': 'Online Update', 'src': 'Source:',
+              'src_d': 'Releases of the project on GitHub, downloaded over HTTPS with certificate checks; fwburn checks '
+                       'the image (checksum, hardware) before it is written to the other flash bank.',
+              'state': 'Status:', 'notes': 'Release notes:', 'check': 'Check for update', 'install': 'Install'},
+    'pt_BR': {'ok': 'Firmware gravada. O aparelho está reiniciando com a nova versão; isso leva cerca de 2 minutos. '
+                    'Depois recarregue esta página.',
+              'fail': 'A firmware não foi gravada (veja as mensagens abaixo). O aparelho continua com a versão atual.',
+              'none': 'Nenhum resultado do fwburn no log. Veja as mensagens abaixo; reinicie o aparelho em Reset '
+                      'somente se terminarem com "operation successful".',
+              'never': 'Ainda não verificado.', 'checking': 'Consultando o GitHub...',
+              'uptodate': 'Atualizado: {v} é a versão mais recente.',
+              'available': 'Nova versão disponível: {v} (publicada em {d}). Atual: {c}.',
+              'error': 'Erro: ', 'rebooting': 'Firmware gravada. O aparelho está reiniciando com a nova versão; '
+              'isso leva cerca de 2 minutos. Depois recarregue esta página.',
+              'timeout': 'sem resposta do aparelho; verifique novamente mais tarde.',
+              'confirm': 'Baixar a versão {v} do GitHub, gravá-la na flash e reiniciar o aparelho?',
+              'steps': {'downloading': 'Baixando a nova versão...', 'checking the image': 'Verificando a imagem...',
+                        'writing to flash (do not power off)': 'Gravando na flash, não desligue o aparelho...'},
+              'h': 'Atualização Online', 'src': 'Origem:',
+              'src_d': 'Versões publicadas do projeto no GitHub, baixadas por HTTPS com verificação de certificado; o '
+                       'fwburn verifica a imagem (checksum, hardware) antes de gravá-la no outro banco da flash.',
+              'state': 'Estado:', 'notes': 'Notas da versão:', 'check': 'Verificar atualização', 'install': 'Instalar'},
+}
+
+# online update source (scripts/fwupdate has the same name)
+FW_REPO = 'cyberponk/pace-v5471-router-GVT-firmware'
+
+FW_ONLINE_HTML = '''
+<table class="setupWifiTable" id="niOnline" style="margin-top:20px">
+	<thead>
+		<tr><th colspan="2">%(h)s</th></tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td width="200">%(src)s<small class="ni-desc">%(src_d)s</small></td>
+			<td><a href="https://github.com/%(repo)s/releases" target="_blank">github.com/%(repo)s</a></td>
+		</tr>
+		<tr>
+			<td>%(state)s</td>
+			<td id="niUpState"></td>
+		</tr>
+		<tr id="niUpNotesRow" style="display:none">
+			<td>%(notes)s</td>
+			<td><pre id="niUpNotes" style="white-space:pre-wrap; margin:0"></pre></td>
+		</tr>
+	</tbody>
+	<tfoot>
+		<tr>
+			<td colspan="2"><a id="niUpInstall" class="btn-default-orange-small right" style="display:none; margin-left:10px" onclick="fwOnline('install')"><span>%(install)s</span></a><a id="niUpCheck" class="btn-default-orange-small right" onclick="fwOnline('check')"><span>%(check)s</span></a></td>
+		</tr>
+	</tfoot>
+</table>
+<pre id="niUpRaw" style="display:none"><!--#include file="fwupdate.inc" --></pre>
+'''
+
+FW_ONLINE_JS = r'''
+// online update: Device_FwUpdate = "check.<n>" / "install.<n>" starts scripts/fwupdate, which writes
+// /var/status/fwupdate ("key: value" lines, "state:" when done), polled through fwupdate_log.htm
+var gUpTok = null, gUpPoll = null, gUpLatest = '';
+function upEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function upParse(t)
+{
+	var r = { notes: [] }, ls = String(t || '').split('\n'), i, m;
+	for (i = 0; i < ls.length; i++) {
+		m = ls[i].match(/^(id|current|latest|date|state|step|error|notes): ?(.*)$/);
+		if (!m) continue;
+		if (m[1] == 'notes') r.notes.push(m[2]); else r[m[1]] = m[2];
+	}
+	return r;
+}
+function upShow(r)
+{
+	var T = gFwTxt, s, st = r.state, el = function(i) { return document.getElementById(i); };
+	if (!r.id) s = T.never;
+	else if (!st) s = (r.step && T.steps[r.step]) || T.checking;
+	else if (st == 'uptodate') s = T.uptodate.replace('{v}', r.current || '');
+	else if (st == 'available') s = T.available.replace('{v}', r.latest || '').replace('{d}', r.date || '-').replace('{c}', r.current || '');
+	else if (st == 'rebooting') s = T.rebooting;
+	else s = T.error + (r.error || st);
+	el('niUpState').innerHTML = upEsc(s);
+	el('niUpState').style.color = st == 'error' ? '#a12c1f' : (st == 'available' || st == 'rebooting') ? '#1d6b33' : '';
+	var notes = st == 'available' ? r.notes.join('\n').replace(/\s+$/, '') : '';
+	el('niUpNotes').innerHTML = upEsc(notes);
+	el('niUpNotesRow').style.display = notes ? '' : 'none';
+	gUpLatest = st == 'available' ? r.latest : '';
+	el('niUpInstall').style.display = gUpLatest ? '' : 'none';
+	el('niUpCheck').style.display = (r.id && !st) || st == 'rebooting' ? 'none' : '';
+}
+function fwOnline(a)
+{
+	if (gUpPoll || !gUpTok) return;
+	if (a == 'install' && !confirm(gFwTxt.confirm.replace('{v}', gUpLatest))) return;
+	var id = a + '.' + new Date().getTime(), n = 0;
+	ConfigAccess(gUpTok).write('Device_FwUpdate', id).commit(function(res) {
+		if (res && res.error) { upShow({ id: id, state: 'error', error: res.error, notes: [] }); return; }
+		upShow({ id: id, notes: [] });
+		gUpPoll = setInterval(function() {
+			var x = new XMLHttpRequest();
+			x.onreadystatechange = function() {
+				if (x.readyState != 4 || !gUpPoll) return;
+				var r = upParse(x.status == 200 ? x.responseText : '');
+				if (r.id == id) upShow(r);
+				// done, or 20 minutes without a result (a download can take a while)
+				if ((r.id == id && r.state) || ++n > 600) {
+					clearInterval(gUpPoll); gUpPoll = null;
+					if (r.id != id || !r.state) upShow({ id: id, state: 'error', error: gFwTxt.timeout, notes: [] });
+				}
+			};
+			x.open('GET', 'fwupdate_log.htm?t=' + new Date().getTime(), true);
+			x.send(null);
+		}, 2000);
+	});
+}
+'''
+
+
+def firmware(lang):
+    # Firmware page: firmware.cgi only pipes the upload into fwburn (to the other bank) and never
+    # reboots. After the upload the page reads fwburn's log lines again and, when the newest one is
+    # a new "operation successful", reboots so the new bank boots.
+    t = FW_TXT[lang]
+
+    def fn(txt):
+        txt = sub1(r'gToken = null;\n', lambda m: m.group(0) + 'var gReboot = null, gFwNewest = null, gFwLast = null, gFwWait = 0;\n'
+                   'var gFwTxt = %s;\n' % json.dumps(t, ensure_ascii=False), txt, 'firmware globals')
+        txt = sub1(r"\tlogs = logs.join\('\\n'\);", lambda m: "\tgFwNewest = logs.length ? logs[0] : '';\n" + m.group(0),
+                   txt, 'firmware newest line')
+        txt = sub1(r"(\te.innerText = logs;\n)", lambda m: m.group(1) + '\tif (gFwWait) fwCheck();\n', txt, 'firmware check hook')
+        txt = sub1(r"(\tgToken = pageData.token;\n)", lambda m: m.group(1) +
+                   "\tgReboot = util.parseJson('<!--#echo jsonvar=\"token=reboot\"-->');\n"
+                   "\tgUpTok = util.parseJson('<!--#echo jsonvar=\"token=Device_FwUpdate\"-->');\n"
+                   "\tupShow(upParse(document.getElementById('niUpRaw').innerText));\n", txt, 'firmware online init')
+        txt = sub1(r'(\nfunction onFrameLoad\(\)\n)', lambda m: FW_ONLINE_JS + m.group(1), txt, 'firmware online js')
+        txt = sub1(r'(\n<div style="display:none" id="divSending">)',
+                   lambda m: FW_ONLINE_HTML % dict(t, repo=FW_REPO) + m.group(1), txt, 'firmware online html')
+        txt = sub1(r"function onFrameLoad\(\)\n\{\n\tdisplayElement\('divSending', 'none'\);\n\tdisplayElement\('divForm'\);\n\treadLogs\(\);\n\}",
+                   '''function fwMsg(s, ok)
+{
+	var e = document.getElementById('niFwMsg');
+	e.className = ok ? 'ni-ok' : 'ni-warn';
+	e.innerText = s;
+	e.style.display = s ? 'block' : 'none';
+}
+// newest fwburn line after the upload: a new "operation successful" -> reboot into the new bank
+function fwCheck()
+{
+	var fresh = gFwNewest && gFwNewest != gFwLast;
+	if (fresh && / operation successful$/.test(gFwNewest)) {
+		gFwWait = 0;
+		displayElement('divSending', 'none');
+		fwMsg(gFwTxt.ok, true);
+		ConfigAccess(gReboot).fct("reboot").commit(function() {}, function() {});
+	} else if (gFwWait < 8 && !(fresh && /WARNING|interrupted|can't|Error|error/.test(gFwNewest))) {
+		gFwWait++;
+		setTimeout(readLogs, 1000);
+	} else {
+		gFwWait = 0;
+		displayElement('divSending', 'none');
+		displayElement('divForm');
+		fwMsg(fresh ? gFwTxt.fail : gFwTxt.none);
+	}
+}
+function onFrameLoad()
+{
+	gFwWait = 1;
+	readLogs();
+}''', txt, 'firmware onFrameLoad')
+        txt = sub1(r"(\tdisplayElement\('divForm', 'none'\);\n\tdisplayElement\('divSending'\);\n)",
+                   lambda m: "\tgFwLast = gFwNewest;\n\tfwMsg('');\n" + m.group(1), txt, 'firmware send')
+        return sub1(r'(<h3 class="text-up">[^<]*</h3>\n)', lambda m: m.group(1) +
+                    '\n<p id="niFwMsg" class="ni-warn" style="display:none"></p>\n', txt, 'firmware message')
+    return fn
+
+
 def apps(lang):
     # Games & Applications page: renamed Port Forwarding (it holds preset port forwarding rules)
     title = {'en_US': ('Games & Applications', 'Port Forwarding'), 'pt_BR': ('Jogos ou Aplicativos', 'Redirecionamento de Portas')}[lang]
@@ -1221,7 +1420,7 @@ STATUS_TXT = {
               'disconnected': 'Not connected', 'internet': 'Internet', 'inetok': 'Working', 'inetdown': 'No Internet',
               'via': 'Internet via', 'wan': 'WAN port', 'viaphone': 'USB tethering', 'nonet': 'none',
               'phoneinet': 'Phone Internet', 'clients': 'Clients', 'channel': 'Channel', 'width': 'Bandwidth',
-              'power': 'Power', 'half': 'half duplex', 'apnote': 'used in router mode only',
+              'power': 'Power', 'half': 'half duplex', 'uplink': 'uplink to the main network', 'gwtag': 'gateway', 'apnote': 'used in router mode only',
               'ddns': 'Dynamic DNS', 'pubip': 'Public IP', 'updating': 'Updating...', 'failed': 'Failed',
               'apconn': 'Access point, address', 'noaddr': 'no address yet', 'gateway': 'gateway',
               'ntp': 'NTP Server', 'now': 'Router time', 'lastsync': 'Last synchronization', 'ok': 'OK',
@@ -1238,7 +1437,7 @@ STATUS_TXT = {
               'disconnected': 'Desconectado', 'internet': 'Internet', 'inetok': 'Funcionando',
               'inetdown': 'Sem Internet', 'via': 'Internet via', 'wan': 'porta WAN', 'viaphone': 'Ancoragem USB',
               'nonet': 'nenhuma', 'phoneinet': 'Internet do celular', 'clients': 'Clientes', 'channel': 'Canal',
-              'width': 'Largura de banda', 'power': 'Pot&ecirc;ncia', 'half': 'half duplex',
+              'width': 'Largura de banda', 'power': 'Pot&ecirc;ncia', 'half': 'half duplex', 'uplink': 'liga&ccedil;&atilde;o com a rede principal', 'gwtag': 'gateway',
               'apnote': 's&oacute; no modo roteador', 'ddns': 'DNS din&acirc;mico', 'pubip': 'IP p&uacute;blico',
               'updating': 'Atualizando...', 'failed': 'Falhou',
               'apconn': 'Access point, endere&ccedil;o', 'noaddr': 'ainda sem endere&ccedil;o', 'gateway': 'gateway',
@@ -1272,6 +1471,7 @@ STATUS_JS = r"""<script type="text/javascript">
     var wan = cli('<!--#echo jsonvar="cli=WANConnectionDevice_1:shadow"-->') || {};
     var ports = cli('<!--#echo jsonvar="cli=Switch_2_Port"-->') || {};
     var hosts = cli('<!--#echo jsonvar="cli=LANDevice_1_Hosts"-->') || {};
+    var arp = cli('<!--#echo jsonvar="cli=LANDevice_1_ARPTable"-->') || {};
     var wl = cli('<!--#echo jsonvar="cli=WLANInterface_1"-->') || {};
     var wlc = cli('<!--#echo jsonvar="cli=WLANConfig"-->') || {};
     var ntpOn = cli('<!--#echo jsonvar="cli=Services_Time_NTPEnable"-->');
@@ -1297,23 +1497,35 @@ STATUS_JS = r"""<script type="text/javascript">
             if (el("ni-inet-link")) el("ni-inet-link").href = "config_ap.htm";
         }
 
-        // Local network: devices (name, IP) and negotiated speed of each connected port
-        var hl = [];
-        for (i = 1; i <= (+hosts.Count || 0); i++) if (hosts[i]) hl.push(hosts[i]);
+        // Local network: devices (name, IP) and negotiated speed of each connected port. A port's
+        // MAC list (Status.ARPTable) is joined with the host table (names, DHCP addresses) and the
+        // router's ARP table (address of any device it talked to); MACs compared as bare hex
+        function hex(v) { return String(v || "").toLowerCase().replace(/[^0-9a-f]/g, ""); }
+        var dev = {}, k, hm;
+        for (k in arp) if (arp.hasOwnProperty(k) && arp[k] && arp[k].MACAddress) dev[hex(arp[k].MACAddress)] = { ip: arp[k].IPAddress || "", name: "" };
+        for (k in hosts) if (hosts.hasOwnProperty(k) && hosts[k] && hosts[k].MACAddress) {
+            hm = hex(hosts[k].MACAddress);
+            dev[hm] = { ip: hosts[k].IPAddress || (dev[hm] || {}).ip || "", name: hosts[k].Hostname || "" };
+        }
         var plist = (ports.List || "").split(",");
         for (i = 0; i < plist.length; i++) {
             var p = ports[plist[i]], span;
             if (!p || !p.Status || p.Status.LinkState != "Up") continue;
             span = el("LAN" + p.PortId + "Hostname");
             if (!span) continue;
-            var macs = (p.Status.ARPTable || "").toLowerCase().split(","), out = [];
-            for (j = 0; j < hl.length; j++) {
-                for (m = 0; m < macs.length; m++) {
-                    if (macs[m] && macs[m] == (hl[j].MACAddress || "").toLowerCase()) {
-                        out.push(esc(hl[j].Hostname || "---") + "<br/>" + esc(hl[j].IPAddress || ""));
-                    }
-                }
+            var macs = String(p.Status.ARPTable || "").split(/[,;\s]+/), out = [], more = 0, d, up = false;
+            for (m = 0; m < macs.length; m++) {
+                d = dev[hex(macs[m])];
+                if (!hex(macs[m]) || !d || (!d.ip && !d.name)) continue;
+                // the uplink port of an access point carries the whole main network: first 4
+                if (out.length >= 4) { more++; continue; }
+                // no name known (an access point has no DHCP server, the host table is empty): IP only
+                if (t.apgw && d.ip == t.apgw) up = true;
+                out.push((d.name ? esc(d.name) + "<br/>" : "") + esc(d.ip || "") + (t.apgw && d.ip == t.apgw ? " <em>(%(gwtag)s)</em>" : ""));
             }
+            if (more) out.push("<em>+" + more + "</em>");
+            // AP mode: the port the main router is behind lists devices of the whole main network
+            if (up) out.unshift("<em>%(uplink)s:</em>");
             var lm = /^(\d+)base[^-]*-(FD|HD)/.exec(p.Status.LinkMode || "");
             var speed = lm ? (+lm[1] >= 1000 ? (+lm[1] / 1000) + " Gbps" : lm[1] + " Mbps") + (lm[2] == "HD" ? " %(half)s" : "") : "";
             span.innerHTML = (out.length ? out.join("<br/>") : "---") + (speed ? "<br/><em>" + speed + "</em>" : "");
@@ -1530,6 +1742,7 @@ if __name__ == '__main__':
         edit(os.path.join(js, 'config_wireless.javascript'), wifi_js(lang))
         edit(os.path.join(js, 'logread.javascript'), logread_js)
         edit(os.path.join(adm, 'logread.htm'), logread_htm(lang))
+        edit(os.path.join(adm, 'firmware.htm'), firmware(lang))
         edit(os.path.join(adm, 'config_lan.htm'), lan)
         edit(os.path.join(adm, 'config_lan.htm'), lan_ddns)
         edit(os.path.join(adm, 'about.htm'), about)
@@ -1540,7 +1753,7 @@ if __name__ == '__main__':
             edit(os.path.join(adm, page), lambda t, page=page, lang=lang: descriptions.describe(page, lang, t))
         # runtime status written by tetherd, included by the Status and USB pages: the ssi CGI
         # only includes files from the page's own directory (absolute and ../ paths are refused)
-        for name in ('tether', 'usb', 'wifi', 'hw', 'ddns', 'sshkey', 'clock', 'ntp', 'ntpsync'):
+        for name in ('tether', 'usb', 'wifi', 'hw', 'ddns', 'sshkey', 'clock', 'ntp', 'ntpsync', 'fwupdate'):
             inc = os.path.join(adm, name + '.inc')
             if os.path.lexists(inc):
                 os.remove(inc)

@@ -1,0 +1,166 @@
+#!/bin/ash
+# /etc/bewan/scripts/ni-settings: settings backup and restore (Management > Backup / Restore page)
+# A small HTTP server run by inetd on port 8090 (init.d/inetd; lib/ni-guard drops it except from the
+# LAN): this lighttpd's mod_cgi crashes it and its mod_proxy does not forward request bodies. The page
+# calls it cross-origin (CORS). It has no web session of its own: every request carries a one-time
+# ticket (t=, 32 hex) that the logged-in page wrote to Device_SettingsTicket through configd; the
+# ticket is spent whatever the outcome.
+#   a=export            the current settings as a file (download)
+#   a=list              saved settings on the router, one per line: id|date|firmware|description
+#   a=save   (POST)     save the current settings on the router; body = description
+#   a=delete&id=N       delete saved settings N
+#   a=upload (POST)     body = a settings file: checked and staged; answers its date/firmware/description
+#   a=apply             restore the staged file;  a=restore&id=N  restore saved settings N
+# Restoring replaces /nvram/bewan/router.diff (the settings that differ from factory, which configd
+# reads at boot, as init.d/store-config2 writes it) and reboots (scripts/settings-apply).
+# A settings file is a tar: router.diff, notifylist (TR-069, when present), info (key=value).
+D=/nvram/ni-settings
+NV=/nvram/bewan
+W=/var/tmp/ni-settings
+STAGE=/var/tmp/ni-settings-upload.tar
+MAX=20
+
+# stdout is the connection (inetd): no stray error messages in the answer
+exec 2>/dev/null
+
+# --- HTTP request: "METHOD /path?query HTTP/1.x", headers, body (Content-Length bytes, read by body())
+CR=$(printf '\r')
+read -r method path proto
+len=0
+while read -r h; do
+	h=${h%$CR}
+	[ -z "$h" ] && break
+	case "$h" in [Cc]ontent-[Ll]ength:*) len=${h#*:}; len=${len# } ;; esac
+done
+qs=${path#*\?}; [ "$qs" = "$path" ] && qs=''
+http() { # status, content type, extra headers (each ending in CRLF)
+	printf 'HTTP/1.0 %s\r\nContent-Type: %s\r\nCache-Control: no-store\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: Content-Disposition\r\n%b\r\n' "$1" "$2" "$3"
+}
+if [ "$method" = OPTIONS ]; then
+	http '204 No Content' text/plain 'Access-Control-Allow-Methods: GET, POST\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Max-Age: 600\r\n'
+	exit 0
+fi
+
+arg() { echo "&$qs" | sed -n "s/.*&$1=\([$2]*\).*/\1/p" | head -1; }
+get() { printf 'cd _Device\nget %s\n' "$1" | cli -q 2>/dev/null; }
+reply() { http '200 OK' 'text/plain; charset=utf-8' ''; printf '%s\n' "$*"; }
+fail() { reply "error: $*"; exit 0; }
+
+# --- one-time ticket
+tk=$(arg t 0-9a-f)
+want=$(get SettingsTicket)
+case "$want" in
+????????????????????????????????) printf 'cd _Device\nset SettingsTicket 0\nfcommit\n' | cli -s >/dev/null 2>&1 ;;
+*) want='' ;;
+esac
+[ ${#tk} = 32 ] && [ "$tk" = "$want" ] || fail "not authorized (reload the page and log in again)"
+
+action=$(arg a a-z)
+id=$(arg id 0-9)
+case "$len" in ''|*[!0-9]*) len=0 ;; esac
+body() { [ "$len" -gt 0 ] && dd bs=1 count=$len 2>/dev/null; }
+
+# configd stores a commit in the background (init.d/store-config2): wait until it is on the flash
+flush() {
+	n=0
+	while [ $n -lt 20 ] && { [ -f /var/bewan/tmp/save.diff ] || [ -f /var/bewan/tmp/store.diff ] || [ -f /var/bewan/lock/store.lock ]; }; do
+		sleep 1; n=$((n + 1))
+	done
+}
+
+# current settings -> tar $1 (description $2)
+pack() {
+	flush
+	[ -f $NV/router.diff ] || fail "no stored settings found"
+	rm -rf $W; mkdir -p $W
+	cp $NV/router.diff $W/ || fail "can't read the settings"
+	[ -f $NV/notifylist ] && cp $NV/notifylist $W/
+	{
+		echo "product=Pace V5471 cyberponk"
+		echo "firmware=$(cat /etc/bewan/release)"
+		echo "date=$(date '+%Y-%m-%d %H:%M %Z')"
+		echo "description=$2"
+		echo "md5=$(md5sum < $W/router.diff | cut -d' ' -f1)"
+	} > $W/info
+	(cd $W && tar cf "$1" router.diff info $( [ -f notifylist ] && echo notifylist )) || fail "can't write the settings file"
+	rm -rf $W
+}
+
+# checks the settings file $1 and extracts it to $W; prints nothing, fails with a message
+unpack() {
+	rm -rf $W; mkdir -p $W
+	names=$(tar tf "$1" 2>/dev/null) || fail "not a settings file"
+	for n in $names; do
+		case "$n" in router.diff|info|notifylist) ;; *) fail "not a settings file (unexpected $n)" ;; esac
+	done
+	(cd $W && tar xf "$1" 2>/dev/null) || fail "not a settings file"
+	[ -s $W/router.diff ] && [ -f $W/info ] || fail "not a settings file (no settings in it)"
+	grep -q '^product=Pace V5471' $W/info || fail "this file is not from a Pace V5471"
+	sum=$(sed -n 's/^md5=//p' $W/info)
+	[ "$sum" = "$(md5sum < $W/router.diff | cut -d' ' -f1)" ] || fail "the file is damaged (checksum)"
+}
+
+info() { sed -n "s/^$2=//p" "$1" | head -1 | tr -d '|\r'; }
+
+case "$action" in
+export)
+	f=/var/tmp/ni-settings-export.tar
+	pack $f ''
+	name="pace-v5471-settings-$(date '+%Y%m%d-%H%M').tar"
+	http '200 OK' application/octet-stream "Content-Disposition: attachment; filename=\"$name\"\r\nContent-Length: $(wc -c < $f)\r\n"
+	cat $f
+	rm -f $f
+	;;
+list)
+	out=''
+	for i in $(ls $D 2>/dev/null | sed -n 's/^\([0-9]*\)\.info$/\1/p' | sort -rn); do
+		out="$out$i|$(info $D/$i.info date)|$(info $D/$i.info firmware)|$(info $D/$i.info description)
+"
+	done
+	reply "ok
+$out"
+	;;
+save)
+	# description: one line, no control characters, up to 200 bytes
+	desc=$(body | tr '\r\n\t' '   ' | tr -d '\000-\037|' | cut -b1-200)
+	[ "$(ls $D 2>/dev/null | grep -c '\.tar$')" -lt $MAX ] || fail "already $MAX saved settings, delete one first"
+	mkdir -p $D
+	i=$(date +%s)
+	while [ -f $D/$i.tar ]; do i=$((i + 1)); done
+	pack $D/$i.tar "$desc"
+	(cd $D && tar xf $i.tar info && mv info $i.info) || { rm -f $D/$i.tar $D/$i.info; fail "can't save on the router"; }
+	sync
+	reply "ok"
+	;;
+delete)
+	[ -n "$id" ] && [ -f $D/$id.tar ] || fail "no such saved settings"
+	rm -f $D/$id.tar $D/$id.info
+	sync
+	reply "ok"
+	;;
+upload)
+	[ "$len" -gt 0 ] && [ "$len" -le 262144 ] || fail "empty or too large file"
+	rm -f $STAGE
+	body > $STAGE
+	[ "$(wc -c < $STAGE)" = "$len" ] || { rm -f $STAGE; fail "upload incomplete"; }
+	unpack $STAGE
+	reply "ok
+date=$(info $W/info date)
+firmware=$(info $W/info firmware)
+description=$(info $W/info description)"
+	rm -rf $W
+	;;
+apply|restore)
+	if [ "$action" = apply ]; then f=$STAGE; else f=$D/$id.tar; [ -n "$id" ] || f=''; fi
+	[ -n "$f" ] && [ -f "$f" ] || fail "nothing to restore"
+	unpack "$f"
+	rm -f $STAGE
+	reply "ok"
+	# after the answer: write the settings and reboot
+	start-stop-daemon -S -b -x /etc/bewan/scripts/settings-apply -- $W
+	;;
+*)
+	fail "unknown action"
+	;;
+esac
+exit 0

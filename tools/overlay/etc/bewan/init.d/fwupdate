@@ -1,0 +1,6 @@
+#!/bin/sh
+# /etc/bewan/init.d/fwupdate: onchange of Device_FwUpdate (the Firmware page's online update
+# buttons write "check.<n>" or "install.<n>"). Sourced by configd (dash, set -u): only starts
+# scripts/fwupdate in the background (it reads the value itself) and returns.
+start-stop-daemon -S -b -x /etc/bewan/scripts/fwupdate
+true

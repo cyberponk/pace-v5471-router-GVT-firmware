@@ -203,3 +203,74 @@ assert.equal(c.el('tz').value, 'custom'); assert.equal(c.el('tzCustom').value, '
 assert(/WAN/.test(c.el('stVia').innerHTML) || /WAN/.test(c.el('stVia').innerHTML));
 global.setInterval = () => 1; global.XMLHttpRequest = function() { this.open = () => {}; this.send = () => {}; };
 c.handlers['#update'](); assert(/^\d+$/.test(c.calls[0].write.Services_Time_UpdateNow));
+// --- firmware: after the upload, reboot only on a new "operation successful" from fwburn
+const vm = require('vm');
+function fw(logsAfter, upRaw) {
+  const html = require('fs').readFileSync(dir + '/firmware.htm', 'utf8');
+  let src = html.match(/<script type="text\/javascript">\n(gToken[\s\S]*?)<\/script>/)[1]
+    .replace(/<!--#echo jsonvar="token=logread"-->/, '{"t":"log"}').replace(/<!--#echo jsonvar="token=reboot"-->/, '{"t":"rb"}')
+    .replace(/<!--#echo jsonvar="token=Device_FwUpdate"-->/, '{"t":"up"}')
+    .replace(/<!--#echo jsonvar="cli=Device_FirmwareVersion"-->/, '"cyberponk-v1.2.31"');
+  const els = {}, el = id => els[id] || (els[id] = { style: {}, innerText: id == 'niUpRaw' ? (upRaw || '') : '', innerHTML: '', value: 'x.bin', submit() {} });
+  let logs = 'Nov 10 10:00:00 PaceAP user.info fwburn[1]: operation successful', ready, timers = [];
+  const r = { calls: [], el, timers };
+  const ctx = {
+    document: { getElementById: el }, setTimeout: f => timers.push(f),
+    $: { util: { parseJson: JSON.parse }, event: { ready: f => { ready = f; } } }, html: () => {},
+    ConfigAccess: tok => ({ fct(n) { this.n = n; return this; },
+      write(k, v) { this.n = k + '=' + v; return this; },
+      commit(ok) { r.calls.push(tok.t + ':' + this.n); ok(this.n == 'logread' ? { logread: logs } : {}); } }),
+    confirm: () => true, XMLHttpRequest: function() { this.open = (m, u) => { r.xhr = u; }; this.send = () => {}; r.x = this; },
+    setInterval: f => { r.tick = f; return 1; }, clearInterval: () => { r.tick = null; },
+  };
+  ctx.$ = Object.assign(() => ({ html() {} }), ctx.$);
+  vm.createContext(ctx); vm.runInContext(src, ctx); ready();
+  r.ctx = ctx; if (upRaw !== undefined) return r;
+  vm.runInContext('sendFirmware()', ctx); logs += '|' + logsAfter; el('frameFirmware').onload();
+  for (let i = 0; i < 10 && timers.length; i++) timers.shift()();
+  return r;
+}
+let f = fw('Nov 10 10:05:00 PaceAP user.info fwburn[2]: DUAL BANK|Nov 10 10:05:09 PaceAP user.info fwburn[2]: operation successful');
+assert(f.calls.includes('rb:reboot')); assert.equal(f.el('niFwMsg').className, 'ni-ok');
+f = fw('Nov 10 10:05:00 PaceAP user.info fwburn[2]: WARNING: Invalid MD5SUM');
+assert(!f.calls.includes('rb:reboot')); assert.equal(f.el('niFwMsg').className, 'ni-warn'); assert.equal(f.el('divForm').style.display, 'block');
+f = fw('');                                                                     // only the old success line: no reboot
+assert(!f.calls.includes('rb:reboot')); assert.equal(f.el('niFwMsg').style.display, 'block'); assert(f.calls.filter(x => x == 'log:logread').length > 5);
+// online update: state from the last run, check -> poll -> Install -> confirm -> install
+f = fw('', 'The filename requested in a include file directive does not seem to exist.');
+assert(/./.test(f.el('niUpState').innerHTML)); assert.equal(f.el('niUpInstall').style.display, 'none');
+f = fw('', 'id: check.1\ncurrent: 1.2.33\nlatest: 1.2.34\nurl: https://x/cyberponk-v1.2.34.bin\ndate: 2026-11-10\nnotes: Fixes <b>\nnotes: more\nstate: available\n');
+assert(f.el('niUpState').innerHTML.indexOf('1.2.34') >= 0); assert.equal(f.el('niUpInstall').style.display, '');
+assert.equal(f.el('niUpNotes').innerHTML, 'Fixes &lt;b&gt;\nmore');
+vm.runInContext("fwOnline('install')", f.ctx);
+const uw = f.calls[f.calls.length - 1]; assert(/^up:Device_FwUpdate=install\.\d+$/.test(uw), uw);
+assert.equal(f.el('niUpCheck').style.display, 'none');
+const id = uw.split('=')[1];
+f.tick(); f.x.readyState = 4; f.x.status = 200; f.x.responseText = 'id: ' + id + '\ncurrent: 1.2.33\nstep: downloading\n'; f.x.onreadystatechange();
+assert(f.tick); assert(/\.\.\./.test(f.el('niUpState').innerHTML));
+f.tick(); f.x.readyState = 4; f.x.status = 200; f.x.responseText = 'id: ' + id + '\nerror: download failed (x)\nstate: error\n'; f.x.onreadystatechange();
+assert(!f.tick); assert(/download failed/.test(f.el('niUpState').innerHTML)); assert.equal(f.el('niUpCheck').style.display, '');
+console.log('firmware ok:', dir);
+// --- config_backup: every CGI call writes a fresh one-time ticket first
+{
+  const xs = [];
+  global.XMLHttpRequest = function() { this.open = (m, u) => { this.m = m; this.u = u; }; this.send = b => { this.b = b; xs.push(this); };
+    this.getResponseHeader = () => 'text/plain'; };
+  const reply = (x, t) => { x.readyState = 4; x.status = 200; x.responseText = t; x.onreadystatechange(); };
+  global.confirm = () => true; global.location = { host: "192.0.2.10" }; global.window = {};
+  c = load(dir + '/config_backup.htm', { 'token=Device_SettingsTicket': '{"t":"bk"}' });
+  assert.equal(xs.length, 1); assert(/^http:\/\/192\.0\.2\.10:8090\/settings\?t=[0-9a-f]{32}&a=list$/.test(xs[0].u), xs[0].u);
+  assert.equal(c.calls[0].write.Device_SettingsTicket, xs[0].u.match(/t=([0-9a-f]+)/)[1]);
+  reply(xs[0], 'ok\n1794322230|2026-11-10 14:50 BRT|cyberponk-v1.2.35|<b>x</b>\n\n');
+  assert(/&lt;b&gt;x/.test(c.el('list').innerHTML)); assert(/data-id="1794322230"/.test(c.el('list').innerHTML));
+  c.el('desc').value = '  '; c.handlers['#save'](); assert.equal(xs.length, 1); assert(c.msgs[0].startsWith('E:'));
+  c.el('desc').value = 'before Wi-Fi'; c.handlers['#save'](); assert.equal(xs[1].m, 'POST'); assert.equal(xs[1].b, 'before Wi-Fi');   // no Blob in node
+  assert.notEqual(xs[1].u.match(/t=([0-9a-f]+)/)[1], xs[0].u.match(/t=([0-9a-f]+)/)[1]);
+  reply(xs[1], 'error: already 20 saved settings, delete one first\n'); assert(/already 20/.test(c.msgs[c.msgs.length - 1]));
+  c.el('file').files = [{ name: 'x.tar' }]; c.handlers['#upload'](); assert(/a=upload$/.test(xs[2].u));
+  reply(xs[2], 'ok\ndate=2026-11-10\nfirmware=cyberponk-v1.2.35\ndescription=\n'); assert(/a=apply$/.test(xs[3].u));
+  reply(xs[3], 'ok\n'); assert.equal(c.el('main').style.display, 'none');
+  const e = { target: { getAttribute: k => ({ 'data-id': '1794322230', 'data-act': 'delete' })[k] }, preventDefault() {} };
+  c.el('list').onclick(e); assert(/a=delete&id=1794322230$/.test(xs[4].u));
+  console.log('backup ok:', dir);
+}

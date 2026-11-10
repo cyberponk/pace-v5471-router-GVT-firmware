@@ -108,6 +108,8 @@ g_iptables() {
 	# IPv4 input
 	g_chain iptables NI_INPUT
 	iptables -A NI_INPUT -p tcp --dport 5916 ! -i lo -j DROP
+	# settings server (scripts/ni-settings, Backup / Restore page): from the LAN only
+	iptables -A NI_INPUT -p tcp --dport 8090 ! -i lan1 -j DROP
 	iptables -A NI_INPUT -i eth3G -m state --state ESTABLISHED,RELATED -j RETURN
 	iptables -A NI_INPUT -i eth3G -p udp --dport 68 -j RETURN
 	iptables -A NI_INPUT -i eth3G -j DROP
@@ -128,6 +130,7 @@ g_iptables() {
 	[ $ISO_ACTIVE = 1 ] && [ -n "$sub" ] && iptables -A NI_FORWARD -m mark --mark $MARK_ISO/$MARK_ISO -d $sub -j DROP
 	# IPv6
 	g_chain ip6tables NI_INPUT
+	ip6tables -A NI_INPUT -p tcp --dport 8090 ! -i lan1 -j DROP
 	ip6tables -A NI_INPUT -i eth3G -m state --state ESTABLISHED,RELATED -j RETURN
 	ip6tables -A NI_INPUT -i eth3G -p icmpv6 -j RETURN
 	ip6tables -A NI_INPUT -i eth3G -p udp --dport 546 -j RETURN

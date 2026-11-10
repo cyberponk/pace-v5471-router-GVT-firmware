@@ -198,6 +198,44 @@ PAGES = {
     },
     'ddns_log.htm': {},
     'ntp_log.htm': {},
+    'fwupdate_log.htm': {},
+    'config_backup.htm': {
+        "'The router answered: '": "'O roteador respondeu: '",
+        "'No answer from the router.'": "'Sem resposta do roteador.'",
+        "'Settings saved on the router.'": "'Configuração salva no roteador.'",
+        "'Saved settings deleted.'": "'Configuração salva excluída.'",
+        "'Please choose a settings file first.'": "'Escolha primeiro um arquivo de configuração.'",
+        "'Please enter a description.'": "'Informe uma descrição.'",
+        "'No saved settings yet.'": "'Nenhuma configuração salva ainda.'",
+        "restoreBtn: 'Restore'": "restoreBtn: 'Restaurar'",
+        "deleteBtn: 'Delete'": "deleteBtn: 'Excluir'",
+        "'Restore the settings from this file? The current settings are replaced and the device restarts.'":
+            "'Restaurar a configuração deste arquivo? A configuração atual é substituída e o aparelho reinicia.'",
+        "'Restore these saved settings? The current settings are replaced and the device restarts.'":
+            "'Restaurar esta configuração salva? A configuração atual é substituída e o aparelho reinicia.'",
+        "'Delete these saved settings?'": "'Excluir esta configuração salva?'",
+        "fileDate: 'Saved on'": "fileDate: 'Salva em'",
+        "fileFw: 'Firmware'": "fileFw: 'Firmware'",
+        "fileDesc: 'Description'": "fileDesc: 'Descrição'",
+        "'Settings restored. The device is restarting with them; this takes about 2 minutes. If they use another operating mode or address, open the web page at that address afterwards.'":
+            "'Configuração restaurada. O aparelho está reiniciando com ela; isso leva cerca de 2 minutos. Se ela usar outro modo de operação ou endereço, abra depois a página nesse endereço.'",
+        '<h3 class="text-up">Backup / Restore</h3>': '<h3 class="text-up">Backup / Restauração</h3>',
+        '<p>Saves all the settings (Wi-Fi, passwords, network, services) to a file or on the router, and puts them back. Restoring replaces the current settings and restarts the device. The files hold the passwords (Wi-Fi, administrator, shell) in a form that can be decoded: keep them private.</p>':
+            '<p>Salva toda a configuração (Wi-Fi, senhas, rede, serviços) em um arquivo ou no roteador, e a restaura. Restaurar substitui a configuração atual e reinicia o aparelho. Os arquivos contêm as senhas (Wi-Fi, administrador, shell) em uma forma que pode ser decodificada: guarde-os em local seguro.</p>',
+        '<th colspan="2">Settings file</th>': '<th colspan="2">Arquivo de configuração</th>',
+        'Download:<small class="ni-desc">Saves the current settings to a file on this computer.</small>':
+            'Baixar:<small class="ni-desc">Salva a configuração atual em um arquivo neste computador.</small>',
+        '<span>Download settings</span>': '<span>Baixar configuração</span>',
+        'Restore from file:<small class="ni-desc">A settings file downloaded from this page. Its date and firmware version are shown for confirmation before anything changes.</small>':
+            'Restaurar de arquivo:<small class="ni-desc">Um arquivo de configuração baixado desta página. A data e a versão de firmware dele são mostradas para confirmação antes de qualquer mudança.</small>',
+        '<span>Restore from file</span>': '<span>Restaurar do arquivo</span>',
+        '<th colspan="2">Saved on the router</th>': '<th colspan="2">Salvas no roteador</th>',
+        'Save current settings:<small class="ni-desc">Keeps a copy in the router\'s flash memory (up to 20) with a description, for example "before changing the Wi-Fi". Kept across firmware updates; a factory reset does not erase them.</small>':
+            'Salvar a configuração atual:<small class="ni-desc">Guarda uma cópia na memória flash do roteador (até 20) com uma descrição, por exemplo "antes de mudar o Wi-Fi". Mantidas nas atualizações de firmware; a restauração de fábrica não as apaga.</small>',
+        '<span>Save on the router</span>': '<span>Salvar no roteador</span>',
+        '<tr><th>Saved on</th><th>Description</th><th>Firmware</th><th></th></tr>':
+            '<tr><th>Salva em</th><th>Descrição</th><th>Firmware</th><th></th></tr>',
+    },
     'config_ntp.htm': {
         "'NTP servers must be 1 to 4 host names or IP addresses separated by commas.'":
             "'Os servidores NTP devem ser de 1 a 4 nomes ou endereços IP separados por vírgula.'",

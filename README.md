@@ -106,9 +106,16 @@ atuais dos serviços de rede e um conjunto de páginas e serviços novos.
 - **Aviso de erros registrados**: problemas reais encontrados nos logs (erros de script, travamentos,
   reinícios pelo watchdog) ficam guardados na flash e aparecem na página de Status como "Há X erros
   registrados que precisam ser examinados", com *Mostrar* e *Marcar como examinados*.
+- **Atualização online** (Gerenciamento → Firmware): *Verificar atualização* consulta as versões
+  publicadas neste repositório no GitHub e mostra as notas da versão; *Instalar* (com confirmação)
+  baixa a imagem por HTTPS com verificação de certificado, confere-a e grava-a no outro banco da flash,
+  reiniciando em seguida. O envio manual de um `.bin` pela mesma página também reinicia sozinho.
+- **Backup / Restauração** (Gerenciamento → Backup / Restauração): baixar a configuração em um arquivo,
+  restaurar de um arquivo (data e versão mostradas para confirmação), e guardar até 20 cópias no próprio
+  roteador com uma descrição, para restaurar ou excluir depois. Os arquivos contêm as senhas em uma
+  forma decodificável: guarde-os em local seguro.
 - Histórico do sistema ordenado do mais recente para o mais antigo; descrição ao lado de cada
-  configuração; interface em português / inglês com o idioma lembrado; atualização de firmware pela
-  página web (dois bancos).
+  configuração; interface em português / inglês com o idioma lembrado.
 - O roteador principal identifica o aparelho pelo nome (`PaceAP`, opção 12 do DHCP) e pelo fabricante
   (o MAC próprio da Pace, em vez de um MAC administrado localmente).
 
@@ -185,7 +192,9 @@ multicast"):
 A partir de um firmware alacn ou cyberponk em funcionamento (inclusive um iniciado pela RAM):
 
 - **Interface web**: Gerenciamento → Firmware, envie `cyberponk-vX.Y.Z.bin`. A imagem vai para o banco
-  mais antigo e passa a ser a próxima a iniciar; a soma de verificação é conferida antes.
+  mais antigo e passa a ser a próxima a iniciar; a soma de verificação é conferida antes. A partir da
+  v1.3.0 o aparelho reinicia sozinho ao terminar, e *Verificar atualização* na mesma página instala as
+  novas versões publicadas no GitHub.
 - **Console serial**:
   ```
   cd /var/tmp && wget http://<pc>:<porta>/cyberponk-vX.Y.Z.bin -O ni.bin

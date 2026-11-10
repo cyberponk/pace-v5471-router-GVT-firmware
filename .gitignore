@@ -7,3 +7,5 @@
 /session/
 *.bin
 __pycache__/
+# private: downloaded settings files (they contain passwords), screenshots
+/temp/

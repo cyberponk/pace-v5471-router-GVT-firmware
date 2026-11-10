@@ -1,0 +1,250 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>Pace v5471</title>
+
+<link rel="stylesheet" type="text/css" href="../../css/gateway.css"/>
+
+<script type="text/javascript" src="../js/morpheus.min.js"></script>
+<script type="text/javascript" src="../js/menu.js"></script>
+<script type="text/javascript" src="../js/dns.js"></script>
+<script type="text/javascript" src="../js/lite.javascript"></script>
+<script type="text/javascript" src="../js/app.javascript"></script>
+<script type="text/javascript" src="../js/base64.javascript"></script>
+<script type="text/javascript" src="../js/configAccess.javascript"></script>
+
+<!--#isAuth level=admin -->
+<script type="text/javascript">
+var Page = (function($, App) {
+	var data, busy = false;
+	var Messages = App.MessageUtil;
+	// settings server (scripts/ni-settings, run by inetd): same host, port 8090
+	var SRV = "http://" + String(location.host || "").replace(/:\d+$/, "") + ":8090/settings";
+	var txt = {
+		failed: 'The router answered: ',
+		noAnswer: 'No answer from the router.',
+		saved: 'Settings saved on the router.',
+		deleted: 'Saved settings deleted.',
+		noFile: 'Please choose a settings file first.',
+		noDesc: 'Please enter a description.',
+		empty: 'No saved settings yet.',
+		restoreBtn: 'Restore',
+		deleteBtn: 'Delete',
+		confirmFile: 'Restore the settings from this file? The current settings are replaced and the device restarts.',
+		confirmSaved: 'Restore these saved settings? The current settings are replaced and the device restarts.',
+		confirmDelete: 'Delete these saved settings?',
+		fileDate: 'Saved on',
+		fileFw: 'Firmware',
+		fileDesc: 'Description',
+		rebooting: 'Settings restored. The device is restarting with them; this takes about 2 minutes. If they use another operating mode or address, open the web page at that address afterwards.'
+	};
+
+	function el(id) { return document.getElementById(id); }
+	function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+
+	// one-time ticket for cgi-bin/ni-settings.sh: 32 hex digits
+	function ticket() {
+		var b = [], i, h = "";
+		try { b = window.crypto.getRandomValues(new Uint8Array(16)); } catch (e) { b = []; }
+		for (i = 0; i < 16; i++) { h += ((b[i] === undefined ? Math.floor(Math.random() * 256) : b[i]) + 256).toString(16).substr(1); }
+		return h;
+	}
+
+	// every request: a new ticket written through configd (this page's admin session), then the server.
+	// Bodies go as text/plain (a "simple" cross-origin request: no preflight).
+	// cb(lines) gets the answer lines after "ok"; blob: cb(xhr) gets the raw answer
+	function call(action, extra, body, cb, blob) {
+		if (busy) { return; }
+		busy = true;
+		Messages.clearAll();
+		var t = ticket();
+		ConfigAccess(data.token).rollback().write("Device_SettingsTicket", t).commit(function(res) {
+			if (res && res.error) { busy = false; Messages.error(res.error); return; }
+			var x = new XMLHttpRequest();
+			x.onreadystatechange = function() {
+				if (x.readyState != 4) { return; }
+				busy = false;
+				if (blob && x.status == 200 && /octet-stream/.test(x.getResponseHeader("Content-Type") || "")) { cb(x); return; }
+				var answer = function(r) {
+					r = String(r || "");
+					if (x.status == 200 && /^ok/.test(r)) { cb(r.replace(/\s+$/, "").split("\n").slice(1)); }
+					else { Messages.error(r ? txt.failed + r.replace(/^error: /, "") : txt.noAnswer); }
+				};
+				if (blob && x.response && window.FileReader) {
+					var fr = new FileReader();
+					fr.onload = function() { answer(fr.result); };
+					fr.readAsText(x.response);
+				} else {
+					answer(blob ? "" : x.responseText);
+				}
+			};
+			x.open(body === null ? "GET" : "POST", SRV + "?t=" + t + "&a=" + action + (extra || ""), true);
+			if (body !== null && window.Blob) { body = new Blob([body], { type: "text/plain" }); }
+			if (blob) { x.responseType = "blob"; }
+			x.send(body);
+		});
+	}
+
+	function kv(lines) {
+		var r = {}, i, m;
+		for (i = 0; i < lines.length; i++) { m = /^([a-z]+)=(.*)$/.exec(lines[i]); if (m) { r[m[1]] = m[2]; } }
+		return r;
+	}
+
+	function download() {
+		call("export", "", null, function(x) {
+			var name = (/filename="([^"]+)"/.exec(x.getResponseHeader("Content-Disposition") || "") || [])[1] || "pace-v5471-settings.tar";
+			var a = document.createElement("a");
+			a.href = URL.createObjectURL(x.response);
+			a.download = name;
+			document.body.appendChild(a);
+			a.click();
+			setTimeout(function() { URL.revokeObjectURL(a.href); a.parentNode.removeChild(a); }, 1000);
+		}, true);
+	}
+
+	function rebooting() {
+		el("main").style.display = "none";
+		Messages.clearAll();
+		Messages.info(txt.rebooting);
+	}
+
+	function upload() {
+		var f = el("file").files && el("file").files[0];
+		if (!f) { Messages.clearAll(); Messages.error(txt.noFile); return; }
+		call("upload", "", f, function(lines) {
+			var i = kv(lines);
+			if (!confirm(txt.confirmFile + "\n\n" + txt.fileDate + ": " + (i.date || "-") + "\n" + txt.fileFw + ": " + (i.firmware || "-") +
+					(i.description ? "\n" + txt.fileDesc + ": " + i.description : ""))) { return; }
+			call("apply", "", null, rebooting);
+		});
+	}
+
+	function list() {
+		call("list", "", null, function(lines) {
+			var rows = [], i, p;
+			for (i = 0; i < lines.length; i++) {
+				p = lines[i].split("|");
+				if (!/^\d+$/.test(p[0])) { continue; }
+				rows.push("<tr><td>" + esc(p[1] || "-") + "</td><td>" + esc(p[3] || "") + "</td><td>" + esc(p[2] || "") + "</td>" +
+					"<td style=\"white-space:nowrap\"><a href=\"#\" data-act=\"restore\" data-id=\"" + p[0] + "\">" + txt.restoreBtn + "</a> &nbsp; " +
+					"<a href=\"#\" data-act=\"delete\" data-id=\"" + p[0] + "\">" + txt.deleteBtn + "</a></td></tr>");
+			}
+			el("list").innerHTML = rows.length ? rows.join("") : "<tr><td colspan=\"4\">" + txt.empty + "</td></tr>";
+		});
+	}
+
+	function listClick(e) {
+		e = e || window.event;
+		var a = e.target || e.srcElement, id = a.getAttribute && a.getAttribute("data-id"), act = a.getAttribute && a.getAttribute("data-act");
+		if (!id) { return; }
+		if (e.preventDefault) { e.preventDefault(); }
+		if (act == "restore" && confirm(txt.confirmSaved)) { call("restore", "&id=" + id, null, rebooting); }
+		if (act == "delete" && confirm(txt.confirmDelete)) {
+			call("delete", "&id=" + id, null, function() { Messages.info(txt.deleted); setTimeout(list, 0); });
+		}
+		return false;
+	}
+
+	function save() {
+		var d = el("desc").value.replace(/^\s+|\s+$/g, "");
+		if (!d) { Messages.clearAll(); Messages.error(txt.noDesc); return; }
+		call("save", "", d, function() { el("desc").value = ""; Messages.info(txt.saved); setTimeout(list, 0); });
+	}
+
+	return {
+		init: function(pageData) {
+			data = pageData;
+			$("#download").bind("click", download);
+			$("#upload").bind("click", upload);
+			$("#save").bind("click", save);
+			el("list").onclick = listClick;
+			list();
+		}
+	};
+})(lite, App);
+
+$.event.ready(function() {
+	var util = $.util;
+	Page.init({
+		token: util.parseJson('<!--#echo jsonvar="token=Device_SettingsTicket"-->')
+	});
+});
+</script>
+<!--#endAuth var=ok-->
+</head>
+
+<body>
+
+<div id="header-gateway">
+	<div class="wrap text-right">
+		<span class="ni-logo left">NI</span>
+		<p class="lang-menu"><script type="text/javascript">ImportLanguage();</script></p>
+	</div>
+	<div class="clear"></div>
+</div><!--header-gateway-->
+
+<div id="content">
+<div class="wrap">
+<div id="conteudo-gateway">
+
+<div class="col-192 left">
+	<script type="text/javascript">ImportMenu('menu_backup');</script>
+</div><!--col-192-->
+
+<!--#isNotAuth level=admin -->
+<div id="level_auth" style="display:none;">admin</div>
+<!--#include file="auth.htm" -->
+<!--#isAuth level=admin -->
+
+<div class="col-722 left" id="col-722">
+
+<h3 class="text-up">Backup / Restore</h3>
+<p>Saves all the settings (Wi-Fi, passwords, network, services) to a file or on the router, and puts them back. Restoring replaces the current settings and restarts the device. The files hold the passwords (Wi-Fi, administrator, shell) in a form that can be decoded: keep them private.</p>
+
+<div id="main">
+<form action="#" class="form-configuracoes" onsubmit="return false">
+<table class="setupWifiTable">
+<thead>
+	<tr><th colspan="2">Settings file</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Download:<small class="ni-desc">Saves the current settings to a file on this computer.</small></td>
+		<td><a id="download" class="btn-default-orange-small left"><span>Download settings</span></a></td></tr>
+	<tr><td width="250">Restore from file:<small class="ni-desc">A settings file downloaded from this page. Its date and firmware version are shown for confirmation before anything changes.</small></td>
+		<td><input type="file" id="file" accept=".tar" /><br/><br/><a id="upload" class="btn-default-orange-small left"><span>Restore from file</span></a></td></tr>
+</tbody>
+</table>
+
+<table class="setupWifiTable">
+<thead>
+	<tr><th colspan="2">Saved on the router</th></tr>
+</thead>
+<tbody>
+	<tr><td width="250">Save current settings:<small class="ni-desc">Keeps a copy in the router's flash memory (up to 20) with a description, for example "before changing the Wi-Fi". Kept across firmware updates; a factory reset does not erase them.</small></td>
+		<td><input type="text" id="desc" maxlength="60" style="width:300px" /><br/><br/><a id="save" class="btn-default-orange-small left"><span>Save on the router</span></a></td></tr>
+</tbody>
+</table>
+
+<table class="setupWifiTable">
+<thead>
+	<tr><th>Saved on</th><th>Description</th><th>Firmware</th><th></th></tr>
+</thead>
+<tbody id="list">
+	<tr><td colspan="4">-</td></tr>
+</tbody>
+</table>
+</form>
+</div>
+
+</div><!--col-722-->
+<!--#endAuth var=ok-->
+
+<div class="clear"></div>
+</div><!--conteudo-->
+<div class="clear"></div>
+</div><!--wrap-->
+</div><!--content-->
+</body>
+</html>

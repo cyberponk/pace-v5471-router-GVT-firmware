@@ -1,0 +1,84 @@
+#!/bin/ash
+# /etc/bewan/scripts/fwupdate: online update from the project's GitHub releases (Firmware page,
+# via init.d/fwupdate when Device_FwUpdate gets a new value "check.<n>" or "install.<n>").
+# - check: latest release (api.github.com), its tag vX.Y.Z against /etc/bewan/release
+# - install: the same check, then the release's cyberponk-vX.Y.Z.bin over HTTPS (curl + CA bundle),
+#   fwburn -t -v (MD5 and hardware check), fwburn -b (other bank, boot order), reboot
+# Status for the page in /var/status/fwupdate ("key: value" lines; "state:" last when done).
+REPO=cyberponk/pace-v5471-router-GVT-firmware
+ST=/var/status/fwupdate
+F=/var/tmp/fwupdate.bin
+J=/var/tmp/fwupdate.json
+CURL="/usr/bin/curl -sS -f --cacert /etc/ssl/certs/ca-certificates.crt --connect-timeout 15"
+req=$(printf 'cd _Device\nget FwUpdate\n' | cli -q 2>/dev/null)
+action=${req%%.*}
+mkdir -p /var/status
+log() { echo "$*" >> $ST; }
+done_() { log "state: $1"; rm -f $J; exit 0; }
+: > $ST
+log "id: $req"
+current=$(sed -n 's/^[^0-9]*\([0-9][0-9.]*\).*/\1/p' /etc/bewan/release)
+log "current: $current"
+if [ "$(date +%Y)" -lt 2025 ]; then
+	log "error: the clock is not set yet (NTP); HTTPS certificates can't be checked."
+	done_ error
+fi
+if ! $CURL -m 30 -H 'Accept: application/vnd.github+json' -A cyberponk-fwupdate \
+		-o $J "https://api.github.com/repos/$REPO/releases/latest" 2>/var/tmp/fwupdate.err; then
+	if grep -q 'error: 404' /var/tmp/fwupdate.err; then
+		log "error: no release has been published on GitHub yet."
+	else
+		log "error: GitHub can't be reached ($(head -1 /var/tmp/fwupdate.err))"
+	fi
+	done_ error
+fi
+tag=$(sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' $J | head -1)
+latest=$(echo "$tag" | sed -n 's/^[^0-9]*\([0-9][0-9.]*\)$/\1/p')
+url=$(sed -n 's|^ *"browser_download_url": *"\(https://github.com/'$REPO'/releases/download/[^"]*/cyberponk-v[0-9.]*\.bin\)".*|\1|p' $J | head -1)
+if [ -z "$latest" ] || [ -z "$url" ]; then
+	log "error: the latest release (${tag:-none}) has no firmware image."
+	done_ error
+fi
+log "latest: $latest"
+log "url: $url"
+sed -n 's/^ *"published_at": *"\([0-9-]*\)T.*/date: \1/p' $J | head -1 >> $ST
+# release notes: the JSON string, one "notes:" line per line
+sed -n 's/^ *"body": *"\(.*\)",\{0,1\}$/\1/p' $J | head -1 | sed 's/\\r//g; s/\\n/\n/g; s/\\"/"/g; s/\\\\/\\/g' |
+	head -30 | sed 's/^/notes: /' >> $ST
+# newer = some field greater, compared numerically left to right
+newer=$(echo "$latest $current" | awk '{ n = split($1, a, "."); m = split($2, b, ".");
+	for (i = 1; i <= (n > m ? n : m); i++) { if (a[i] + 0 > b[i] + 0) { print 1; exit } if (a[i] + 0 < b[i] + 0) { print 0; exit } }
+	print 0 }')
+if [ "$newer" != 1 ]; then
+	done_ uptodate
+fi
+[ "$action" = install ] || done_ available
+
+log "step: downloading"
+rm -f $F
+if ! $CURL -L -m 600 -A cyberponk-fwupdate -o $F "$url" 2>/var/tmp/fwupdate.err; then
+	rm -f $F
+	log "error: download failed ($(head -1 /var/tmp/fwupdate.err))"
+	done_ error
+fi
+log "size: $(wc -c < $F) bytes"
+log "step: checking the image"
+fwburn -t -v $F > /var/tmp/fwupdate.chk 2>&1
+sed 's/^/fwburn: /' /var/tmp/fwupdate.chk | grep -v '^fwburn: *$' >> $ST
+if ! grep -q 'Checksum is valid' /var/tmp/fwupdate.chk || grep -q 'WARNING' /var/tmp/fwupdate.chk; then
+	rm -f $F
+	log "error: the downloaded image is not valid for this device, nothing was written."
+	done_ error
+fi
+log "step: writing to flash (do not power off)"
+if ! fwburn -b $F > /var/tmp/fwupdate.chk 2>&1; then
+	sed 's/^/fwburn: /' /var/tmp/fwupdate.chk >> $ST
+	rm -f $F
+	log "error: writing failed; the device keeps the current version."
+	done_ error
+fi
+rm -f $F
+log "state: rebooting"
+rm -f $J
+sleep 2
+reboot
