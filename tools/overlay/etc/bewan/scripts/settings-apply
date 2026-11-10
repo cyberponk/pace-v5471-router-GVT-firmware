@@ -18,7 +18,8 @@ while :; do
 	sleep 1
 done
 mkdir -p $NV
-cp $S/router.diff $NV/router.diff.new && mv $NV/router.diff.new $NV/router.diff
+# without a one-time ticket from an older backup (scripts/ni-settings)
+sed '/Device_SettingsTicket=/d' $S/router.diff > $NV/router.diff.new && mv $NV/router.diff.new $NV/router.diff
 wc -c < $NV/router.diff > $NV/router.magic
 if [ -f $S/notifylist ]; then cp $S/notifylist $NV/notifylist; else rm -f $NV/notifylist; fi
 rm -rf $S

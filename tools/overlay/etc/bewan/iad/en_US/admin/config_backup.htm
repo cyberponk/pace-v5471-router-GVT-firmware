@@ -160,6 +160,14 @@ var Page = (function($, App) {
 			$("#upload").bind("click", upload);
 			$("#save").bind("click", save);
 			el("list").onclick = listClick;
+			// Enter in the description saves
+			el("desc").onkeydown = function(e) {
+				e = e || window.event;
+				if ((e.keyCode || e.which) != 13) { return true; }
+				if (e.preventDefault) { e.preventDefault(); }
+				save();
+				return false;
+			};
 			list();
 		}
 	};

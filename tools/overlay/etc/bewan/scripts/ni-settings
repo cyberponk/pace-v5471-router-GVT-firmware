@@ -4,7 +4,8 @@
 # LAN): this lighttpd's mod_cgi crashes it and its mod_proxy does not forward request bodies. The page
 # calls it cross-origin (CORS). It has no web session of its own: every request carries a one-time
 # ticket (t=, 32 hex) that the logged-in page wrote to Device_SettingsTicket through configd; the
-# ticket is spent whatever the outcome.
+# ticket is spent whatever the outcome: recorded in $USED, not written back to configd (a configd
+# commit from here could land after the page's next ticket and overwrite it).
 #   a=export            the current settings as a file (download)
 #   a=list              saved settings on the router, one per line: id|date|firmware|description
 #   a=save   (POST)     save the current settings on the router; body = description
@@ -19,6 +20,7 @@ NV=/nvram/bewan
 W=/var/tmp/ni-settings
 STAGE=/var/tmp/ni-settings-upload.tar
 MAX=20
+USED=$D/.used
 
 # stdout is the connection (inetd): no stray error messages in the answer
 exec 2>/dev/null
@@ -49,11 +51,19 @@ fail() { reply "error: $*"; exit 0; }
 # --- one-time ticket
 tk=$(arg t 0-9a-f)
 want=$(get SettingsTicket)
-case "$want" in
-????????????????????????????????) printf 'cd _Device\nset SettingsTicket 0\nfcommit\n' | cli -s >/dev/null 2>&1 ;;
-*) want='' ;;
-esac
-[ ${#tk} = 32 ] && [ "$tk" = "$want" ] || fail "not authorized (reload the page and log in again)"
+# configd answers the page's write before the value can be read: wait up to 3 s for it
+n=0
+while [ ${#tk} = 32 ] && [ "$want" != "$tk" ] && [ $n -lt 10 ]; do
+	usleep 300000; n=$((n + 1))
+	want=$(get SettingsTicket)
+done
+used=$(cat $USED 2>/dev/null)
+ok=0
+[ ${#tk} = 32 ] && [ "$tk" = "$want" ] && [ "$tk" != "$used" ] && ok=1
+if [ ${#want} = 32 ] && [ "$want" != "$used" ]; then
+	mkdir -p $D; echo "$want" > $USED
+fi
+[ $ok = 1 ] || fail "not authorized (reload the page and log in again)"
 
 action=$(arg a a-z)
 id=$(arg id 0-9)
@@ -73,7 +83,8 @@ pack() {
 	flush
 	[ -f $NV/router.diff ] || fail "no stored settings found"
 	rm -rf $W; mkdir -p $W
-	cp $NV/router.diff $W/ || fail "can't read the settings"
+	# without the one-time ticket (not a setting)
+	sed '/Device_SettingsTicket=/d' $NV/router.diff > $W/router.diff || fail "can't read the settings"
 	[ -f $NV/notifylist ] && cp $NV/notifylist $W/
 	{
 		echo "product=Pace V5471 cyberponk"

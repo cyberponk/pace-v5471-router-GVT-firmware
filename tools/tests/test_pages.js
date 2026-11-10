@@ -264,7 +264,8 @@ console.log('firmware ok:', dir);
   reply(xs[0], 'ok\n1794322230|2026-11-10 14:50 BRT|cyberponk-v1.2.35|<b>x</b>\n\n');
   assert(/&lt;b&gt;x/.test(c.el('list').innerHTML)); assert(/data-id="1794322230"/.test(c.el('list').innerHTML));
   c.el('desc').value = '  '; c.handlers['#save'](); assert.equal(xs.length, 1); assert(c.msgs[0].startsWith('E:'));
-  c.el('desc').value = 'before Wi-Fi'; c.handlers['#save'](); assert.equal(xs[1].m, 'POST'); assert.equal(xs[1].b, 'before Wi-Fi');   // no Blob in node
+  assert.equal(c.el('desc').onkeydown({ keyCode: 65 }), true); assert.equal(xs.length, 1);   // other keys: typing
+  c.el('desc').value = 'before Wi-Fi'; c.el('desc').onkeydown({ keyCode: 13, preventDefault() {} }); assert.equal(xs[1].m, 'POST'); assert.equal(xs[1].b, 'before Wi-Fi');   // no Blob in node
   assert.notEqual(xs[1].u.match(/t=([0-9a-f]+)/)[1], xs[0].u.match(/t=([0-9a-f]+)/)[1]);
   reply(xs[1], 'error: already 20 saved settings, delete one first\n'); assert(/already 20/.test(c.msgs[c.msgs.length - 1]));
   c.el('file').files = [{ name: 'x.tar' }]; c.handlers['#upload'](); assert(/a=upload$/.test(xs[2].u));
